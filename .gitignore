@@ -1,0 +1,8 @@
+# Build output
+bin/
+obj/
+out/
+out2/
+publish/
+*.exe
+.vs/
