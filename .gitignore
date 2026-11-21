@@ -1,0 +1,7 @@
+# local launcher state (personal paths / play history)
+launcher_settings.json
+launcher_play.log
+
+# launcher build output
+launcher/obj/
+launcher/dist/
