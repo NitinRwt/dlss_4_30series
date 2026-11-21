@@ -1,269 +1,351 @@
-# DLSSG for SM86（代理版）- 0.4.2 版本
+# DLSSG for SM86 (proxy build) - 0.4.2
 
-**中文** · [English](README.en.md)
+[中文](README.md) · **English**
 
-在 RTX 30 系列（SM86）和 RTX 20 系列（SM75）上启用 NVIDIA DLSS 帧生成（DLSS-G），并提供 RTX 30 / 20 上的 DLSS 超分 INT8 加速。Windows x64 / D3D12，运行文件为 `version.dll`、`dlssg_sm86.ini` 和 `dlssg_sm86\` 目录。
+Enables NVIDIA DLSS Frame Generation (DLSS-G) on RTX 30-series (SM86) and RTX 20-series (SM75) GPUs, and provides INT8 acceleration for DLSS Super Resolution on RTX 30 / 20. Windows x64 / D3D12. The runtime files are `version.dll`, `dlssg_sm86.ini` and the `dlssg_sm86\` directory.
 
-> **从 0.3.x 升级先看这里：0.4.0 是大版本升级，文件结构和安装方式都变了，不能直接覆盖。**
+> **Upgrading from 0.3.x? Read this first: 0.4.0 is a major upgrade. The file layout and the install procedure both changed, so you cannot copy it over the old version.**
 >
-> 1. 先删干净旧版：退出游戏，删掉游戏目录里本项目的全部代理 DLL（0.3.1–0.3.6 让复制了 `version.dll`、`winmm.dll`、`dbghelp.dll`、`dinput8.dll` 四个，四个都要删）、`dlssg_sm86.ini` 和整个 `dlssg_sm86\` 目录。
-> 2. 再复制新版的三样：`version.dll`、`dlssg_sm86.ini`、整个 `dlssg_sm86\` 目录。运行库、后端、内核包、XeSS 模型包和超分文件都在 `dlssg_sm86\` 里，只复制 DLL 什么都不会发生。
-> 3. 代理任何时候只放一个：根目录只有 `version.dll`；游戏不加载它时，从 `alternatives\` 换一个（换，不是加）。
-> 4. 用新的 `dlssg_sm86.ini`：键的位置变了（`Optimized`、`Preset` 移到 `[DLSSG]`，新增 `[XeSSFG]`），`[Runtime] Mode=Auto` 已删除。旧位置的 `Optimized` / `Preset` 不再读取：只写在旧位置且不是默认值（例如旧 INI 的 `[FrameGeneration] Optimized=1`）时帧生成不启用并记一条 `configuration_invalid`；改过的设置请在新 INI 里重新改。
+> 1. Remove the old version completely: quit the game, then delete every proxy DLL of this project from the game directory (0.3.1–0.3.6 had you copy four of them: `version.dll`, `winmm.dll`, `dbghelp.dll` and `dinput8.dll`; delete all four), plus `dlssg_sm86.ini` and the whole `dlssg_sm86\` directory.
+> 2. Then copy the three items of the new version: `version.dll`, `dlssg_sm86.ini` and the whole `dlssg_sm86\` directory. The runtime, backend, kernel pack, XeSS model pack and super-resolution files all live inside `dlssg_sm86\`; copying only the DLL does nothing.
+> 3. Keep only one proxy at any time: the package root contains only `version.dll`. If the game does not load it, swap in one from `alternatives\` (swap, do not add).
+> 4. Use the new `dlssg_sm86.ini`: keys moved (`Optimized` and `Preset` are now in `[DLSSG]`, and `[XeSSFG]` is new), and `[Runtime] Mode=Auto` was removed. `Optimized` / `Preset` at their old locations are no longer read: if they are set only there and are not the default (for example `[FrameGeneration] Optimized=1` in an old INI), frame generation is not enabled and one `configuration_invalid` is logged. Re-apply any settings you changed in the new INI.
 >
-> 详细步骤见下文「安装与升级」和安装手册 `MANUAL.html`。
+> Details: "Install & upgrade" below, and the manual `MANUAL.en.html`.
 
-## 本次更新说明
+## Contents
+
+- [Project directory overview](#project-directory-overview)
+- [Changes in this release](#changes-in-this-release)
+- [Statement and plans](#statement-and-plans)
+- [Requirements](#requirements)
+- [Extra VRAM for frame generation](#extra-vram-for-frame-generation)
+- [Install & upgrade](#install--upgrade)
+- [Antivirus false positives & signing](#antivirus-false-positives--signing)
+- [Performance](#performance)
+- [Estimating the frame rate with frame generation](#estimating-the-frame-rate-with-frame-generation)
+- [About 6X](#about-6x)
+- [Field feedback](#field-feedback)
+- [Known issues](#known-issues)
+- [Diagnostics & limits](#diagnostics--limits)
+- [Credits](#credits)
+- [Source & build](#source--build)
+- [License & third parties](#license--third-parties)
+
+## Project directory overview
+
+This is what the folder you are looking at contains, and how the pieces fit together.
+
+### How it works, in one paragraph
+
+The game loads the proxy DLL (`version.dll`) because it imports a system DLL of that name. The proxy forwards every export to the real system DLL, but intercepts the game's request to load `nvngx_dlssg.dll` (NVIDIA's DLSS-G runtime). It hands the game the unmodified NVIDIA runtime that ships in this package instead. The backend (`sm86_backend.dll`) then replaces the GPU kernels inside that runtime, which NVIDIA compiled only for Ada / Blackwell, with SM86 / SM75 versions from the kernel pack (`fg_kernels.dll`). Optionally it also swaps DLSS Super Resolution for an INT8 kernel set, or runs Intel's XeSS-FG model instead of DLSS-G. The game keeps supplying color, depth and motion vectors as usual.
+
+```text
+Game ──loads──> version.dll (proxy: loader only, forwards system exports)
+                    │  finds dlssg_sm86\ relative to its own folder
+                    ▼
+        dlssg_sm86\runtime\nvngx_dlssg.dll   NVIDIA DLSS-G runtime (unmodified)
+        dlssg_sm86\backend\sm86_backend.dll  hooks, kernel routing, SR path, capture
+        dlssg_sm86\kernels\fg_kernels.dll    SM86 / SM75 frame-generation kernels
+        dlssg_sm86\xefg\xefg_kernels.dll     XeSS-FG model pack (Engine=XeSS)
+        dlssg_sm86\sr\*                      Super Resolution snippet + INT8 kernels
+```
+
+### Top level of this folder
+
+| Path | What it is |
+|---|---|
+| `version.dll` | The proxy (about 0.8 MB, signed). The one and only hook DLL you normally copy next to the game's render EXE. |
+| `dlssg_sm86.ini` | User configuration. Copy it next to the proxy. Only the keys a player might change are in it; the full key list is in `docs/INSTALL.en.md`. |
+| `dlssg_sm86\` | The payload directory the proxy loads everything from (see below). Must be copied together with the DLL. |
+| `alternatives\` | Five spare proxies (`winmm.dll`, `dbghelp.dll`, `dinput8.dll`, `dxgi.dll`, `d3d12.dll`) plus its own `README.md` with the order to try them. Not copied by default. |
+| `dlssg_sm86ini_Configurator.html` | Single-file, dependency-free INI editor: edit common keys per section, live INI preview, load an existing INI (picker or drag and drop), download / copy, Chinese / English toggle, built-in validation. Open it in any browser. |
+| `MANUAL.html` / `MANUAL.en.html` | Step-by-step install manual (Chinese / English). Double-click to open in a browser. |
+| `README.md` / `README.en.md` | This overview in Chinese / English. |
+| `THIRD_PARTY_NOTICES.txt` | Attributions and license statements for NVIDIA, Intel, Coldwood1026, MFG-Unlocker, etc. |
+| `docs\` | Technical documentation (see below). |
+| `archive\` | Old releases (0.1.0, 0.2.4, 0.3.5) kept for reference. Not needed for use; about 400 MB. |
+
+### `dlssg_sm86\` (the payload)
+
+| Path | What it is |
+|---|---|
+| `backend\sm86_backend.dll` | The backend (about 2.1 MB): NGX hooks and dispatch, kernel routing and fusion, super-resolution path, capture and diagnostics. Contains no kernel images. |
+| `kernels\fg_kernels.dll` | The frame-generation kernel pack (about 18.3 MB, **required**): all kernel images for the SM86 and SM75 families, plus the manifest. Without it, `Engine=DLSS` frame generation is refused (`kernel_pack_missing`, `fg_kernels_unavailable`). |
+| `runtime\nvngx_dlssg.dll` | NVIDIA's DLSS-G runtime 310.9.16.0 (about 7.5 MB), unmodified. Supports up to 6X. The version the game ships is irrelevant. |
+| `xefg\xefg_kernels.dll` | XeSS-FG model pack (about 16.9 MB): programs, weights and CUDA images for Intel model 18 and model 15. Used only when `Engine=XeSS`. |
+| `sr\nvngx_dlss.dll`, `sr\sr_kernels.dll` | Super-resolution snippet 310.9.16.0 (74.2 MB, unmodified) and the INT8 kernel pack for RTX 30 / 20 (106.6 MB). A matched pair, used only when `[SuperResolution] Mode` is not `Off`. *(The full release package contains this folder; this checkout of the repository does not.)* |
+| `logs\dlssg_sm86.log` | Created at run time. One shared text log for every module and process. May not exist until something is logged. |
+
+### `docs\` (technical documentation)
+
+| File | Contents |
+|---|---|
+| `INSTALL.md` / `INSTALL.en.md` | Full install guide and **every INI key**, log fields, driver requirement (R580), preset and optimization-level explanations. |
+| `PROJECT.md` | What is in the release package and how the source repository is organised and built. |
+| `ARCHITECTURE.md` | The execution path from game request to presented frame (proxy → runtime verification → backend → kernel routing). |
+| `CAPTURE.md` | Game Capture & Replay (GCR): record every DLSS-G Evaluate's inputs, parameters and outputs in a real game, then replay offline and compare against the stock runtime bit for bit. |
+| `CAPTURE_SR.md` | `[Debug] CaptureSR`: recording DLSS Super Resolution inputs for offline calibration. |
+| `SIGNING.md` | Optional Authenticode signing of the project's own DLLs during packaging. |
+
+### `archive\`
+
+Previous releases, each with its own README, INI, proxy and (for 0.2.4 / 0.3.5) docs: `0.1.0`, `0.2.4` (native-host mode, with `config\` and `altnative\`), `0.3.5` (proxy mode, with `alternatives\` and a `310.1\` runtime-model variant). The layouts differ from the current one; do not mix files between versions.
+
+### Source repository (separate)
+
+The C++ source (proxy, backend, tests, tools) lives in a separate source repository and builds with `build.ps1`; see [Source & build](#source--build). This folder is the **release package**, not the source tree.
+
+## Changes in this release
 
 ### 0.4.2
 
-- **XeSS-FG 在 RTX 50（Blackwell）上的性能修复**：0.4.1 给 RTX 40 / 50 的是 compute_75 PTX，ptxas 在 sm_120 上把每条 `m8n8k16` 编成一条完整 `m16n8k16`、一半结果丢弃（主干卷积 144 条 vs 72 条、寄存器 79 → 124），Blackwell 的张量核内核因此比 Ampere 形状慢约一倍。0.4.2 给 26 个内核单独编 `.bw` 镜像（compute_86 PTX + 3×3 抽头配对成 `m16n8k32`），并把 RTX 50 上跑 DXIL 更快的 dispatch 收缩到 D25 与 model 15 的 D02 / D30。赛博朋克 2077 3440×1440（RTX 5070）：4X 每真实帧 6.54 → 4.68 ms、真实帧率 46.5 → 52.0 fps；2X 2.43 → 1.69 ms（57.8 → 59.8 fps）；同卡 DLSS 4X 为 3.98 ms。
-- **XeSS-FG 支持抖动运动矢量（`DLSSG.MvecJittered=1`）**：3X / 4X 不再以 `xefg_kernel_fatal{unsupported_input}` 结束——D31 改跑 4 个 `jt_` 内核，携带 model 18 的抖动项 `D = (jp − jc) · (1 − t)`；不带抖动时与普通路径逐位相同。代价约每生成帧 +0.08 ms（1440p RGBA8）、4K +0.17 ms。
-- **4K 优化**：model 18 的 D24 / model 15 的 D29 的 MV splat 换成本项目自己的 CUDA 内核；散射缓冲只清「本次或上次散射可能写到的前缀」。4K 每真实帧再快 3.0–5.6 %，输出逐位不变。
-- **新增 `dlssg_sm86ini_Configurator.html`**：单文件、无外部依赖的 INI 配置器——按分区编辑常用键、实时预览生成的 INI、载入现有 INI（选择或拖放）、下载 / 复制、中英切换，并内置校验（`MaxGeneratedFrames` 1–5、`Engine=XeSS` 只能 1–3、旧 `Model=` 键提示等）。随发行包一起发布。
-- **`[XeSSFG] UseHudless=Auto` 改为与 `0` 相同**：无论游戏是否提供 HUD-less 画面，后缓冲都作为网络输入，整幅画面（含 UI）一起插值（不再产生 `xefg_hudless_unused`）；`1` 仍是严格档（缺可用的 HUD-less 画面即 `xefg_kernel_fatal{hudless}`）。键的取值与出厂值不变（`Auto`）。
-- 版本号 0.4.2；`README` / `MANUAL` / `INSTALL` / `COMPAT` 同步更新（`COMPAT` 新增 C139）。
+- **XeSS-FG performance fixed on RTX 50 (Blackwell)**: 0.4.1 shipped compute_75 PTX to RTX 40 / 50. On sm_120, ptxas compiles every `m8n8k16` into one full `m16n8k16` and discards half of the result (144 vs 72 instructions in the backbone convolution, registers 79 → 124), so the tensor-core kernels ran about twice as slow on Blackwell as on Ampere. 0.4.2 builds separate `.bw` images for 26 kernels (compute_86 PTX, with the 3×3 taps paired into `m16n8k32`) and narrows the dispatches where DXIL is faster on RTX 50 to D25 and model 15's D02 / D30. Cyberpunk 2077 at 3440×1440 (RTX 5070): 4X per real frame 6.54 → 4.68 ms, real frame rate 46.5 → 52.0 fps; 2X 2.43 → 1.69 ms (57.8 → 59.8 fps); DLSS 4X on the same card is 3.98 ms.
+- **XeSS-FG supports jittered motion vectors (`DLSSG.MvecJittered=1`)**: 3X / 4X no longer end in `xefg_kernel_fatal{unsupported_input}`. D31 now runs four `jt_` kernels that carry model 18's jitter term `D = (jp − jc) · (1 − t)`; without jitter the output is bit-identical to the normal path. Cost is about +0.08 ms per generated frame (1440p RGBA8) and +0.17 ms at 4K.
+- **4K optimizations**: model 18's D24 / model 15's D29 MV splat is now this project's own CUDA kernel, and the scatter buffers are cleared only over the prefix that this or the previous scatter may have written. Another 3.0–5.6 % faster per real frame at 4K, output bit-identical.
+- **New `dlssg_sm86ini_Configurator.html`**: a single-file, dependency-free INI configurator. It edits common keys per section, shows a live preview of the generated INI, loads an existing INI (picker or drag and drop), downloads / copies the result, switches between Chinese and English, and validates (`MaxGeneratedFrames` 1–5, `Engine=XeSS` only 1–3, a hint for the old `Model=` key, and so on). Shipped with the release package.
+- **`[XeSSFG] UseHudless=Auto` now behaves the same as `0`**: the back buffer is always the network input and the whole image, UI included, is interpolated, whether or not the game supplies a HUD-less image (`xefg_hudless_unused` is no longer produced). `1` stays the strict mode (no usable HUD-less image → `xefg_kernel_fatal{hudless}`). The key's accepted values and its factory value (`Auto`) are unchanged.
+- Version 0.4.2; `README` / `MANUAL` / `INSTALL` / `COMPAT` updated in step (`COMPAT` gains C139).
 
 ### 0.4.1
 
-- XeSS-FG 引擎（可选）：
-  - 多帧生成（MFG）：`[FrameGeneration] Engine=XeSS` 做到 2X / 3X / 4X（`MaxGeneratedFrames` 1–3）。模型是 MFG-Unlocker 1.6.0 移植的 Intel model 15：2X 仍是 model 18 的图（比原来多 4–5 %），3X / 4X 走 model 15 自己的多帧路径，每个真实帧的第 i 张生成帧用相位 t = i / (N + 1)。`[XeSSFG] Model` 键删除（只有一个模型），旧 INI 里写了只记一条告警。
-  - 张量核 CUDA 后端：移植版的主干层（3×3 INT8 卷积）是手写的 INT8 IMMA 内核（`mma.sync.m16n8k16`），权重用 `cp.async` 双缓冲预取；整套图由本项目自己的 D3D12 + NVAPI CUDA 运行器在游戏的命令列表上执行，不加载 Intel 的 `libxess_fg.dll`。
-  - `[XeSSFG] FlowResolution=CoarseAt4K`：输出像素数 ≥ 3840 × 2160 时自动 `Coarse`，1440p 仍 `Middle`。
-  - `[XeSSFG] UseHudless` 改为三态：`Auto`（出厂，逐帧判断）/ `1`（严格：缺 HUD-less 即拒绝）/ `0`（不用）。
-  - 在 RTX 30 上：1440p 及以下比 DLSS-G 快 8–15 %，4K 起慢 27–30 %，见「性能」。
-- `[SuperResolution] Mode` 改为显式预设：`Off`（出厂）/ `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`；0.4.0 的 `Mode=On` 删除，非法值是 `configuration_invalid`、超分不启用。
-- `[DLSSG] Preset` 只剩 A / B / C：`Auto` 删除（按 `A` 跑），出厂 `A`。
-- 一批键删除、不再读取：旧位置的 `[FrameGeneration] Optimized` / `[Compatibility] OptimizedKernels` / `[Compatibility] Preset`、`[Compatibility] AccelerateNewerGpus` / `ForceGeneratedFrames` / `SM75Family` / `HardwareBilinear` / `LaunchChains` / `PlainVariant`、`[Backends]` 等；写了只记一条告警，行为按出厂值。RTX 40 / 50 一律跑本项目的内核。
-- 驱动要求变成硬性 R580：CUDA 13 构建的 cubin 被驱动拒绝时不再改跑 PTX，直接报错并拒绝帧生成（`driver_below_floor` / `kernel_image_unavailable`）。
-- 超分 INT8 首帧卡顿修复：12 张权重镜像的上传移出第一个观察帧（此前那一次 Evaluate 的 CPU 时间比同预设 FP16 多 5–6 ms）。
-- 显式开关做不到就拒绝，不再静默回退：`[Runtime] Path` / `SRPath` 指错文件、随包文件缺失、RTX 40 / 50 上 `KernelImage=Cubin` 等，都拒绝并写清原因。
-- 日志：只有一个文本日志 `dlssg_sm86\logs\dlssg_sm86.log`（0.4.0 的每进程 `frames_<pid>.jsonl` 取消）；`[Logging] FrameTiming=1` 另写 `frame_timing.txt`。
-
+- XeSS-FG engine (optional):
+  - Multi-frame generation (MFG): `[FrameGeneration] Engine=XeSS` now reaches 2X / 3X / 4X (`MaxGeneratedFrames` 1–3). The model is Intel's model 15 as ported by MFG-Unlocker 1.6.0: 2X still runs model 18's graph (4–5 % more than before), while 3X / 4X use model 15's own multi-frame path, where the i-th generated frame of each real frame uses phase t = i / (N + 1). The `[XeSSFG] Model` key was removed (there is only one model); an old INI that sets it only logs a warning.
+  - Tensor-core CUDA backend: the ported backbone layers (3×3 INT8 convolutions) are hand-written INT8 IMMA kernels (`mma.sync.m16n8k16`) with `cp.async` double-buffered weight prefetch. The whole graph is run by this project's own D3D12 + NVAPI CUDA runner on the game's command list; Intel's `libxess_fg.dll` is not loaded.
+  - `[XeSSFG] FlowResolution=CoarseAt4K`: automatically `Coarse` when the output has ≥ 3840 × 2160 pixels, still `Middle` at 1440p.
+  - `[XeSSFG] UseHudless` became tri-state: `Auto` (factory, decided per frame) / `1` (strict: reject if the HUD-less image is missing) / `0` (do not use).
+  - On RTX 30: 8–15 % faster than DLSS-G at 1440p and below, 27–30 % slower from 4K up; see "Performance".
+- `[SuperResolution] Mode` is now an explicit preset: `Off` (factory) / `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`. 0.4.0's `Mode=On` was removed; an invalid value is `configuration_invalid` and super resolution is not enabled.
+- `[DLSSG] Preset` is only A / B / C now: `Auto` was removed (runs as `A`), factory `A`.
+- A batch of keys was removed and is no longer read: the old-location `[FrameGeneration] Optimized` / `[Compatibility] OptimizedKernels` / `[Compatibility] Preset`, `[Compatibility] AccelerateNewerGpus` / `ForceGeneratedFrames` / `SM75Family` / `HardwareBilinear` / `LaunchChains` / `PlainVariant`, `[Backends]` and so on. Writing them only logs a warning, and behaviour follows the factory value. RTX 40 / 50 always run this project's kernels.
+- The driver requirement is now a hard R580 floor: when a CUDA 13 cubin is rejected by the driver, it no longer falls back to PTX; frame generation is refused with an error (`driver_below_floor` / `kernel_image_unavailable`).
+- Super-resolution INT8 first-frame stutter fixed: uploading the 12 weight mirrors moved out of the first observed frame (previously that single Evaluate cost 5–6 ms more CPU time than the same-preset FP16).
+- Explicit switches that cannot be honoured are refused instead of silently falling back: `[Runtime] Path` / `SRPath` pointing at the wrong file, missing bundled files, `KernelImage=Cubin` on RTX 40 / 50, and so on all refuse and state the reason.
+- Logging: only one text log, `dlssg_sm86\logs\dlssg_sm86.log` (0.4.0's per-process `frames_<pid>.jsonl` is gone); `[Logging] FrameTiming=1` additionally writes `frame_timing.txt`.
 
 ### 0.4.0
 
-- 超分 INT8（只限 RTX 30 / 20）：`[SuperResolution] Mode=On` 后，游戏用预设 L / M 的超分档位（多数游戏是「性能」和「超级性能」）换成本项目的 INT8 内核，预设不变。RTX 3070 上一次超分的 GPU 时间对同预设 FP16：L −6..−16 %，M −9..−22 %。出厂 `Mode=Off`。（`Mode=On` 2026-10-19 删除，现为 `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`。）
-- DLSS-G 预设 C（FG Lite，可选）：`[DLSSG] Preset=C`。每个生成帧不跑第二个网络与后处理，RTX 3070 真实抓取上每生成帧 GPU 时间 2X −29..−34 %、4X 约 −45 %，画质略低（主要在 HUD 与遮挡边缘）。出厂仍是 `Preset=Auto`（`Auto` 2026-10-22 已删除，出厂改为 `A`）。
-- XeSS-FG 引擎（可选）：`[FrameGeneration] Engine=XeSS`，用 Intel XeSS-FG 的模型生成插帧：Intel model 15（MFG-Unlocker 1.6.0 的移植）到 3X / 4X，2X 是 Intel model 18 的图；2026-10-26 起只有这一个模型，`[XeSSFG] Model` 键删除（不再读取）；`[XeSSFG] FlowResolution`（`Coarse` / `Middle` / `Fine`）、`UseHudless`。不带、也不加载 Intel 的 `libxess_fg.dll`，模型由本项目自己的 CUDA 内核执行。在 RTX 30 上比 DLSS-G 慢，见「已知问题」。出厂仍是 `Engine=DLSS`。
-- 随包运行库换成 `nvngx_dlssg.dll` 310.9.16（默认预设下与 310.9.1 的输出逐位相同）。游戏自带哪个版本都不影响。
-- INI 新布局：DLSS-G 专用的 `Optimized`、`Preset` 搬到 `[DLSSG]`，XeSS 专用的键在 `[XeSSFG]`；旧位置照旧生效，记一条 `configuration_warning`（2026-10-22 起旧位置不再读取，见上面第 4 条）。`[Runtime] Mode=Auto` 删除：写了按 `Bundled` 运行并记一条告警。
-- 发布根目录只放一个代理 `version.dll`，其余五个在 `alternatives\`，一次只放一个（0.3.1–0.3.6 是四个都复制，升级时要删掉多余的，见「安装与升级」）。
-- RTX 40 / 50：帧生成也换成本项目的内核（PTX，由驱动编译），`[Compatibility] AccelerateNewerGpus=0` 可换回 NVIDIA 官方内核（这个键 2026-10-19 删除，不再读取：RTX 40 / 50 一律跑本项目的内核）。实机未测。
-- `[Logging] FrameTiming=1`：每个真实帧在日志目录写一行（帧间隔、超分与帧生成的 GPU 时间），用于反馈性能。
-- 新增安装手册 `MANUAL.html`（英文 `MANUAL.en.html`）。
+- Super-resolution INT8 (RTX 30 / 20 only): with `[SuperResolution] Mode=On`, the quality tiers the game runs with presets L / M (for most games "Performance" and "Ultra Performance") are replaced by this project's INT8 kernels; the preset itself does not change. On an RTX 3070, the GPU time of one super-resolution pass versus the same-preset FP16 is −6..−16 % for L and −9..−22 % for M. Factory `Mode=Off`. (`Mode=On` was removed on 2026-10-19; it is now `M-INT8` / `L-INT8` / `M-FP16` / `L-FP16`.)
+- DLSS-G preset C (FG Lite, optional): `[DLSSG] Preset=C`. Each generated frame skips the second network and post-processing. On real captures on an RTX 3070 the GPU time per generated frame is −29..−34 % at 2X and about −45 % at 4X, with slightly lower quality (mainly in HUD and occlusion edges). The factory value was `Preset=Auto` (`Auto` was removed on 2026-10-22; the factory value is now `A`).
+- XeSS-FG engine (optional): `[FrameGeneration] Engine=XeSS` generates the interpolated frames with Intel's XeSS-FG model: Intel model 15 (a port from MFG-Unlocker 1.6.0) up to 3X / 4X, and model 18's graph at 2X. Since 2026-10-26 there is only this one model; the `[XeSSFG] Model` key was removed (no longer read). `[XeSSFG] FlowResolution` (`Coarse` / `Middle` / `Fine`) and `UseHudless` remain. Intel's `libxess_fg.dll` is neither shipped nor loaded; the model runs on this project's own CUDA kernels. On RTX 30 it is slower than DLSS-G, see "Known issues". Factory is still `Engine=DLSS`.
+- The bundled runtime became `nvngx_dlssg.dll` 310.9.16 (bit-identical to 310.9.1 with the default preset). The version the game ships makes no difference.
+- New INI layout: DLSS-G-only `Optimized` and `Preset` moved to `[DLSSG]`, XeSS-only keys are in `[XeSSFG]`. The old locations still worked at first and logged a `configuration_warning` (since 2026-10-22 they are no longer read; see item 4 above). `[Runtime] Mode=Auto` was removed: writing it runs as `Bundled` and logs a warning.
+- The release root now holds a single proxy `version.dll`; the other five are in `alternatives\` and you use one at a time (0.3.1–0.3.6 had you copy all four, so extras must be deleted when upgrading; see "Install & upgrade").
+- RTX 40 / 50: frame generation also switched to this project's kernels (PTX, compiled by the driver). `[Compatibility] AccelerateNewerGpus=0` switched back to NVIDIA's official kernels (that key was removed on 2026-10-19 and is no longer read: RTX 40 / 50 always run this project's kernels). Not tested on real hardware.
+- `[Logging] FrameTiming=1`: writes one line per real frame in the log directory (frame interval, GPU time of super resolution and frame generation), for performance feedback.
+- New install manual `MANUAL.html` (English: `MANUAL.en.html`).
 
 ### 0.3.6
 
-- 新增可选项 `[FrameGeneration] CatmullRomWarp=1`（默认 0）：把生成帧里的两次运动补偿取样从双线性换成 Catmull-Rom，细结构（栏杆、文字、远处窗格）在生成帧里更清楚一些，代价是每生成帧约 +3%（1080p / 1440p）到 +4%（4K），开启后画面不再与官方逐位一致。在 6 款游戏 11 份真实抓取上离线测得细结构能量提高约 5 个百分点、闪烁指标同步改善，肉眼改善轻微；不进任何 `Optimized` 档位，310.1 构建不支持。另有实验键 `DetailRestore`（C / D 两项），实测收益小或有副作用，不建议开启，说明见 `docs/INSTALL.md`。
-- 日志记录游戏自带的 DLSS-G 运行库版本、哈希和代际（`runtime_redirect` / `game_runtime_generation`）。使用早期 Streamline（1.x–2.4，自带 DLSS-G 3.x）的游戏只能 2X：那一代插件不会向运行库写生成帧数，不是本项目的设置能改的；日志现在会直接写明。Streamline 1.x 的版本号此前一律记成 1.0.0.0，已修正。
-- NVIDIA App 的「DLSS 优设」打开后，帧生成组件由 NGX 模型库提供，本项目照常接管；日志新增 `ngx_override_active` 标明这种情况。模型库里的 Streamline 在线插件现在也能被识别（此前 `ForcePluginFrames` 在这类进程里静默无效）。
-- 发布包根目录放齐四个代理（`version` / `winmm` / `dbghelp` / `dinput8`）和 INI，与 `alternatives/README.md` 的说明一致；`310.1\` 也带 INI。
-- 删除一个从未被调用的 NVAPI 桩（`SetRawScgPriority`，在全部运行库、NGX 核心与 Streamline 里都不存在）。
-- `docs/INSTALL.md` 补充：`Preset` 的含义与生效条件、`Optimized=2/3` 为什么"看不出差别"、画面瑕疵的归属与整屏闪烁的排除顺序。
+- New optional `[FrameGeneration] CatmullRomWarp=1` (default 0): the two motion-compensation taps in a generated frame switch from bilinear to Catmull-Rom, so fine structure (railings, text, distant window panes) is a little clearer in generated frames. The cost is about +3 % per generated frame (1080p / 1440p) to +4 % (4K), and the picture is no longer bit-identical to the official one. Measured offline on 11 real captures from 6 games, fine-structure energy rose about 5 percentage points and the flicker metric improved with it; the visible improvement is slight. It is not part of any `Optimized` tier and the 310.1 build does not support it. There is also an experimental key `DetailRestore` (items C / D) whose measured benefit was small or had side effects; enabling it is not recommended, see `docs/INSTALL.md`.
+- The log now records the DLSS-G runtime version, hash and generation the game ships (`runtime_redirect` / `game_runtime_generation`). Games using an early Streamline (1.x–2.4, shipping DLSS-G 3.x) are limited to 2X: that plug-in generation never writes the generated-frame count to the runtime, which no setting of this project can change; the log now says so directly. Streamline 1.x versions were all logged as 1.0.0.0 before; fixed.
+- With the NVIDIA App's "DLSS override" on, the frame-generation component is supplied by the NGX model repository and this project takes it over as usual; the log adds `ngx_override_active` to mark this case. The Streamline online plug-in from the model repository is now also recognised (previously `ForcePluginFrames` was silently ineffective in such processes).
+- The release root now holds all four proxies (`version` / `winmm` / `dbghelp` / `dinput8`) and the INI, matching `alternatives/README.md`; `310.1\` also carries the INI.
+- Removed a never-called NVAPI stub (`SetRawScgPriority`, which exists in none of the runtimes, the NGX core or Streamline).
+- `docs/INSTALL.md` additions: what `Preset` means and when it takes effect, why `Optimized=2/3` "shows no difference", who owns image artefacts, and the order of elimination for whole-screen flicker.
 
 ### 0.3.5
 
-- 修复自 0.3.0 起就存在的一个缺陷：游戏重建帧生成特性（切菜单、改分辨率/设置、开关帧生成，部分游戏运行中会频繁重建）时，驱动会回收内核句柄，被回收的句柄可能仍绑着上一个内核的优化版本，之后有概率用错内核——表现为生成帧花屏，或玩一段时间后随机崩溃 / 显卡驱动重置（`Optimized=0` 不受影响）。3070 上 15 次重建的离线测试里，旧版 4 次有 3 次出错帧，新版每次逐位一致。
-- 日志新增 `fg_gate_exit`（进程正常退出时写），日志里没有它 = 游戏是被杀掉或崩溃的。
+- Fixed a defect present since 0.3.0: when the game rebuilds the frame-generation feature (menu switches, resolution / settings changes, toggling frame generation; some games rebuild frequently while running), the driver recycles kernel handles, and a recycled handle could still be bound to the previous kernel's optimized variant, so the wrong kernel could be used afterwards. It showed up as corrupted generated frames, or random crashes / GPU driver resets after playing for a while (`Optimized=0` is unaffected). In an offline test of 15 rebuilds on a 3070, the old version produced bad frames in 3 of 4 runs; the new version was bit-identical every time.
+- The log gains `fg_gate_exit` (written on normal process exit); if it is missing from the log, the game was killed or crashed.
 
 ### 0.3.4
 
-- 修复 0.3.3 在 RTX 30 上的崩溃（进游戏或开 DLSS 后显卡驱动重置，《极限竞速 地平线 6》表现为 FHC01）。原因：NVIDIA App 的 DLSS 覆盖或 NGX 在线更新生效时，DLSS 超分模型从 NGX 模型目录加载，它也收到了本项目给 Streamline 的显卡架构改写，在 RTX 30 上走了不属于这张卡的内核路径导致 GPU 挂起。现在 NVIDIA 自己的组件（NGX 模型目录、驱动模块）一律得到真实架构，改写只对 Streamline 与游戏生效。
-- 日志：`arch_spoof_applied` 按调用模块各记一条并带完整路径，新增 `arch_spoof_excluded`；三处小修复（缺失系统导出不再让代理加载失败 #10 / #65，`backend_install -100` 给出具体原因，HAGS 关闭单独报错 #513）。
+- Fixed 0.3.3's crash on RTX 30 (GPU driver reset on entering the game or enabling DLSS; FHC01 in *Forza Horizon 6*). Cause: when the NVIDIA App's DLSS override or an NGX online update was active, the DLSS super-resolution model was loaded from the NGX model directory, and it also received this project's GPU-architecture rewrite meant for Streamline. On RTX 30 it then took a kernel path that does not belong to the card and hung the GPU. NVIDIA's own components (the NGX model directory, driver modules) now always get the real architecture; the rewrite applies only to Streamline and the game.
+- Logging: `arch_spoof_applied` is written once per calling module with its full path, and `arch_spoof_excluded` is new. Three small fixes: a missing system export no longer makes the proxy fail to load (#10 / #65), `backend_install -100` gives a concrete reason, and HAGS being off is reported separately (#513).
 
-### 0.3.3（预览）
+### 0.3.3 (preview)
 
-- `[FrameGeneration] Optimized=1` 不再打开 `SkipRepeatedRealCopy`，任何档位都不再打开它；需要时手动写 `SkipRepeatedRealCopy=1`。它在合成场景与离线重放里逐位一致，但那是内核以外的假设（取决于游戏侧插件如何提交同一组的多次 Evaluate），从未在实际游戏中验证过，而 0.3.2 上出现了一例画面闪烁报告（《绝区零》，公开仓库 issue #532）。档位 `1` 仍与官方运行库逐位一致。
-- RTX 20 系（Turing）：向游戏改写 NVAPI 显卡架构改为在游戏启动时就装好（本 mod 的 `DllMain`，或 `nvapi64.dll` 被加载时）。Streamline 2.x 在 `slInit` 里就判定「本显卡不支持 DLSS-G」，那时 DLSS-G 运行库还没被加载、此前版本尚未装好这道改写，2080 Ti +《最终幻想 7 重生》（Streamline 2.8）因此丢掉了帧生成插件。RTX 30 同样需要：一台 RTX 3060 Laptop 在同一款游戏上有完全相同的现象（公开仓库 issue #509，0.2.4 的 native 版对所有显卡都报 Ada，所以那一版正常），因此真实答案是 Turing 或 Ampere 时都改写成 Blackwell（RTX 50，两个版本都做多帧生成，游戏和 Streamline 的 3X / 4X / 6X 选项按这个架构放开），Ada / Blackwell 不动。
-- 诊断：日志字段 `arch_spoof_installed.trigger` 新增 `dllmain` / `nvapi_load` / `dependency_load` 三个取值。
+- `[FrameGeneration] Optimized=1` no longer turns on `SkipRepeatedRealCopy`, and no tier turns it on any more; write `SkipRepeatedRealCopy=1` manually if you need it. It is bit-identical in synthetic scenes and offline replay, but that rests on assumptions outside the kernels (how the game-side plug-in submits repeated Evaluates of the same group), it has never been verified in a real game, and one flicker report appeared on 0.3.2 (*Zenless Zone Zero*, public-repository issue #532). Tier `1` remains bit-identical with the official runtime.
+- RTX 20 series (Turing): the NVAPI GPU-architecture rewrite presented to the game is now installed when the game starts (this mod's `DllMain`, or when `nvapi64.dll` is loaded). Streamline 2.x decides in `slInit` that "this GPU does not support DLSS-G"; at that point the DLSS-G runtime had not been loaded and earlier versions had not yet installed the rewrite, so a 2080 Ti with *Final Fantasy VII Rebirth* (Streamline 2.8) lost its frame-generation plug-in. RTX 30 needs the same: an RTX 3060 Laptop showed exactly the same behaviour in the same game (public-repository issue #509; 0.2.4's native build reported Ada for every card, which is why that version worked). So the real answer is to rewrite Turing and Ampere to Blackwell (RTX 50; both versions do multi-frame generation, and the game's and Streamline's 3X / 4X / 6X options are unlocked for this architecture). Ada / Blackwell are left untouched.
+- Diagnostics: the log field `arch_spoof_installed.trigger` gains the values `dllmain` / `nvapi_load` / `dependency_load`.
 
 ### 0.3.2
 
-- 重写了部分推理内核（310.9 版）：生成画面与官方 DLSS-G 完全一致（RTX 3080 Ti 与 RTX 5070 实测逐位相同；RTX 2080 Ti 的输出与 3080 Ti 逐位相同），不再有损，并有些许加速（3080 Ti 上 0~8%）。
-- 优化内核等级调整：`[FrameGeneration] Optimized` 现在是 `0`–`3` 四级。`0` 原厂内核，不加速；`1` 全部加速，画面与官方逐位一致（出厂默认）；`2` 再开有损图像内核，更快，对官方画面 PSNR 约 50 dB 以上（仅 310.9 版）；`3` 全部有损加速，最快。说明见 [`docs/INSTALL.md`](docs/INSTALL.md)。
+- Rewrote some inference kernels (310.9 build): generated frames now match the official DLSS-G exactly (bit-identical on an RTX 3080 Ti and an RTX 5070; the RTX 2080 Ti output is bit-identical to the 3080 Ti), no longer lossy, with a small speed-up (0–8 % on the 3080 Ti).
+- Optimized-kernel tiers reworked: `[FrameGeneration] Optimized` is now four levels `0`–`3`. `0` stock kernels, no acceleration; `1` all accelerations, bit-identical with the official picture (factory default); `2` additionally enables lossy image kernels, faster, about 50 dB PSNR or better against the official picture (310.9 build only); `3` all lossy accelerations, fastest. See [`docs/INSTALL.en.md`](docs/INSTALL.en.md).
 
 ### 0.3.1
 
-- 安装简化：发布包根目录现在直接带四个代理（`version.dll`、`winmm.dll`、`dbghelp.dll`、`dinput8.dll`），**全部复制到渲染 EXE 旁即可，不用挑**。进程里第一个被游戏加载的那个成为本 mod，其余自动待机、只把导出转发给同名系统 DLL，不会重复安装帧生成。只有这四个都没被加载时，才从 `alternatives\` 里手动拿 `dxgi.dll` 或 `d3d12.dll`（二选一）。
-- 出厂 `MaxGeneratedFrames` 由 `5` 改为 `3`（4×）。自带 Dynamic MFG 的游戏会默认跑到这里写的上限，`5` 对多数人偏高（公开仓库 issue #497 / #499）。要 6× 请用 310.9 版并把这一行手动改成 `5`；游戏自带旧版 4X 插件时无论写几都只有 4×。
-- INI 写错某个键不再关掉整个 mod：该键回退到自己的默认值并记一条 `configuration_warning`（2026-10-23 起 `Level=2` 才看得到，C106；此前 `Level=1`），其余键照常工作（2026-10-19 起改了：写错的值是 `configuration_invalid`，该键所属的功能不启用，见下面出厂 INI 一段）。后端不支持某个开关时（例如 310.1 版上写 `Preset=B`）也改为**去掉那个开关继续安装**并记 `kernel_selection_unsupported{stripped_flags}`，而不是整个拒绝。
-- RTX 20 系（Turing）恢复可用，用出厂 `dlssg_sm86.ini` 即可，不需要改任何键：内核族按物理显卡自动选到 SM75 一族。RTX 2080 Ti + 巫师 3 次世代版 DX12 实测可开启 2X（该游戏自带的 Streamline 插件上限就是 2X）；4X / 6X 与 30 系一样由游戏自带的插件决定。驱动需 R580 以上（2026-10-26 起是硬性要求，见 `docs/INSTALL.md`“驱动版本要求：R580”）。
-- 0.3.0 在任何 RTX 20 上都开不了帧生成：它向 NGX 核心报告的显卡架构不是这张卡的真实架构，核心因此拒绝了帧生成特性（对应公开仓库 issue #491 / #492）。本次修改不影响 RTX 30 的数值与性能。
-- 与 20 系有关的两个键 `SM75Family` 和 `SpoofArchToGame` 都不在出厂 INI 里，缺省值即为正确取值；需要时见 [`docs/INSTALL.md`](docs/INSTALL.md)。
-- 帧生成打不开时的诊断：`[Logging] Level=2` 现在会记录是哪一道闸门拒绝的——硬件加速 GPU 计划（HAGS）、驱动版本、NGX 核心对能力查询的答复、以及 `CreateFeature` 的返回值。这一组记录名都以 `fg_gate_` 开头。
-- RTX 20 上的画质与性能尚未测量：本版只证明帧生成能在 20 系上跑起来（数千次 Evaluate 零失败、零回退），没有 FPS 数据，也没有与 RTX 30 的画质对比。
+- Simpler install: the release root now carries four proxies directly (`version.dll`, `winmm.dll`, `dbghelp.dll`, `dinput8.dll`); **copy all of them next to the render EXE, no choosing**. The first one the game loads in the process becomes this mod; the others stand by automatically, only forward their exports to the same-named system DLL, and do not install frame generation twice. Only when none of the four is loaded, take `dxgi.dll` or `d3d12.dll` (pick one) from `alternatives\` by hand.
+- Factory `MaxGeneratedFrames` changed from `5` to `3` (4×). Games with their own Dynamic MFG run up to the limit written here by default, and `5` is too high for most people (public-repository issues #497 / #499). For 6× use the 310.9 build and change this line to `5` by hand; with a game that ships the older 4X plug-in you get only 4× whatever you write.
+- A wrong key in the INI no longer turns off the whole mod: the key falls back to its own default and one `configuration_warning` is logged (visible only at `Level=2` since 2026-10-23, C106; `Level=1` before), and the other keys work as usual (since 2026-10-19 this changed: a wrongly written value is `configuration_invalid`, and the feature the key belongs to is not enabled, see the factory-INI paragraph below). When the backend does not support a switch (for example `Preset=B` on the 310.1 build), it also **drops that switch and continues installing**, logging `kernel_selection_unsupported{stripped_flags}`, instead of refusing outright.
+- RTX 20 series (Turing) works again with the factory `dlssg_sm86.ini`; no key needs changing: the kernel family is chosen automatically by the physical card (the SM75 family). Frame generation at 2X was verified on an RTX 2080 Ti with *The Witcher 3* next-gen (the game's own Streamline plug-in tops out at 2X); 4X / 6X are decided by the game's plug-in, same as on 30-series. R580 or newer driver required (a hard requirement since 2026-10-26; see "Driver version requirement: R580" in `docs/INSTALL.md`).
+- 0.3.0 could not enable frame generation on any RTX 20: the GPU architecture it reported to the NGX core was not the card's real one, so the core refused the frame-generation feature (public-repository issues #491 / #492). This change does not affect RTX 30 numbers or performance.
+- The two RTX 20-related keys `SM75Family` and `SpoofArchToGame` are not in the factory INI; their defaults are correct. See [`docs/INSTALL.en.md`](docs/INSTALL.en.md) if needed.
+- Diagnostics when frame generation will not open: `[Logging] Level=2` now records which gate refused it: hardware-accelerated GPU scheduling (HAGS), the driver version, the NGX core's answer to the capability query, and the return value of `CreateFeature`. All these records are named `fg_gate_…`.
+- RTX 20 quality and performance have not been measured: this version only proves frame generation can run on 20-series (thousands of Evaluates, zero failures, zero fallbacks). There is no FPS data and no quality comparison with RTX 30.
 
 ### 0.3.0
 
-- 由 native 模式回退到代理模式。native 化（自建 NGX host）在部分游戏上存在难以修复的兼容问题；本版改用代理 DLL 内嵌未修改的原厂运行库，游戏对 NGX 的调用不变，兼容性更好。
-- 310.9 运行库新增 6X（`MaxGeneratedFrames` 上限由 3 提到 5）。在自身支持 Dynamic MFG 的游戏上，帧生成选「动态 / 自动」时会跑到 6X。
-- 内核最优集（离线基准快约 19~32%）、两档出厂 INI、录制回放与诊断日志等见下文与 `docs/`。
+- Went back from native mode to proxy mode. Nativizing (a self-built NGX host) had compatibility problems in some games that were hard to fix; this version embeds the unmodified stock runtime via a proxy DLL, so the game's NGX calls are unchanged and compatibility is better.
+- The 310.9 runtime adds 6X (`MaxGeneratedFrames` limit raised from 3 to 5). In games that support Dynamic MFG themselves, choosing "Dynamic / Auto" frame generation runs at 6X.
+- The best kernel set (about 19–32 % faster in the offline benchmark), the two-tier factory INI, capture and replay, and diagnostic logging are described below and in `docs/`.
 
-## 声明与后续计划
+## Statement and plans
 
-- 插帧（DLSS-G）的内核级工作已基本达到现阶段的最优水平，暂不继续做内核优化；后续版本以兼容性与 bug 修复为主。
-- 超分 L / M 的 INT8 已在本版提供（RTX 30 / 20）。
-- XeSS-FG 引擎：model 15，2X–4X，未做性能优化；性能与 HDR（RGBA16F）后缓冲见「已知问题」。
-- Vulkan 支持在项目当前状态下难以继续：封装层本身的游戏兼容性还不够好、覆盖测试也不多，再加上 Vulkan 只会带来更多兼容性问题。有需要的用户可以选用社区的 patch 版本。
+- The kernel-level work on frame interpolation (DLSS-G) has essentially reached the best state achievable at this stage; no further kernel optimisation is planned. Later versions will focus on compatibility and bug fixes.
+- INT8 for super-resolution presets L / M is provided in this version (RTX 30 / 20).
+- XeSS-FG engine: model 15, 2X–4X, no performance tuning done; for performance and the HDR (RGBA16F) back buffer see "Known issues".
+- Vulkan support is hard to continue in the project's current state: the wrapper layer's game compatibility is not good enough and test coverage is thin, and Vulkan would only bring more compatibility problems. Users who need it can use the community patch builds.
 
-## 运行要求
+## Requirements
 
-- 系统与游戏：Windows 10/11 x64、D3D12。
-- GPU：RTX 30 系列（SM86）或 RTX 20 系列（Turing / SM75）。RTX 3070 上做开发验证与全部游戏内测试，RTX 3080 Ti 上跑过 0.4.0 测试包的完整测试；RTX 20 在 2080 Ti 上实测过帧生成（0.3.x）与一次超分 INT8 冒烟。RTX 40 / 50 也可用，帧生成走本项目内核的 PTX 路线，实机未测。
-- 驱动：**R580 或更新**的 NVIDIA 驱动（CUDA 13.0），591.86、610.74、610.88、617.14 实测可用。更旧的驱动上帧生成不启用，日志里一条 `driver_below_floor`。
-- 不需要 CUDA Toolkit，不需要 Python。
+- OS and game: Windows 10/11 x64, D3D12.
+- GPU: RTX 30 series (SM86) or RTX 20 series (Turing / SM75). Development validation and all in-game tests were done on an RTX 3070; the complete 0.4.0 test package was also run on an RTX 3080 Ti. On RTX 20, frame generation was tested on a 2080 Ti (0.3.x) along with one INT8 super-resolution smoke test. RTX 40 / 50 also work, with frame generation going through this project's kernels as PTX, not tested on real hardware (except the XeSS-FG results on RTX 5070 noted in 0.4.2).
+- Driver: an NVIDIA driver of **R580 or newer** (CUDA 13.0); 591.86, 610.74, 610.88 and 617.14 were verified. On older drivers frame generation is not enabled and the log has one `driver_below_floor`.
+- No CUDA Toolkit and no Python needed.
 
-| 发布包 | 随包运行库 | 帧生成上限 | `version.dll` 大小 | SHA-256 |
+| Release package | Bundled runtime | Frame-generation limit | `version.dll` size | SHA-256 |
 |---|---|---|---|---|
 | `dlssg-release-0.4.0-x64.zip` | 310.9.16.0 | 6X | 853,280 | `7b3f90435be4f94348bf8d128c84871c7f904c704f7690601a263277c327a7b2` |
 
-代理 DLL 约 0.85 MB；运行库、后端与各资源包都是 `dlssg_sm86\` 下的文件：后端 `backend\sm86_backend.dll` 2.1 MB（不含任何内核），帧生成内核包 `kernels\fg_kernels.dll` 18.3 MB（必需），运行库 `runtime\nvngx_dlssg.dll` 7.5 MB，XeSS 模型包 `xefg\xefg_kernels.dll` 16.9 MB（model 18 与 model 15 的程序、权重和 CUDA 镜像），超分 `sr\nvngx_dlss.dll` 74.2 MB 与 `sr\sr_kernels.dll` 106.6 MB（两者成对，只在 `[SuperResolution] Mode` 不是 `Off` 时用到）。
+The proxy DLL is about 0.85 MB; the runtime, backend and the resource packs are all files under `dlssg_sm86\`: the backend `backend\sm86_backend.dll` 2.1 MB (contains no kernels), the frame-generation kernel pack `kernels\fg_kernels.dll` 18.3 MB (required), the runtime `runtime\nvngx_dlssg.dll` 7.5 MB, the XeSS model pack `xefg\xefg_kernels.dll` 16.9 MB (programs, weights and CUDA images of model 18 and model 15), and super resolution `sr\nvngx_dlss.dll` 74.2 MB and `sr\sr_kernels.dll` 106.6 MB (the two are a pair, used only when `[SuperResolution] Mode` is not `Off`).
 
-## 不同配置的插帧额外显存参考
+## Extra VRAM for frame generation
 
-帧生成自身的本地显存增量（预热后减去创建特性前，向上取整到 10 MiB，310.9 版、最优内核，0.3.x 时测得）。该增量只随输出分辨率变化，与倍率无关：2X 与 6X 占用相同，倍率不额外占用显存。
+The local VRAM increase of frame generation itself (after warm-up, minus the value before creating the feature, rounded up to 10 MiB; 310.9 build, best kernels, measured in the 0.3.x era). The increase depends only on the output resolution and not on the multiplier: 2X and 6X use the same amount, and a higher multiplier takes no extra VRAM.
 
-| 画幅 | 输出分辨率 | 帧生成额外显存 |
+| Aspect | Output resolution | Extra VRAM for frame generation |
 |---|---|---|
-| 16:9 | 720p | 约 230 MiB |
-| 16:9 | 1080p | 约 350 MiB |
-| 16:9 | 1440p | 约 540 MiB |
-| 16:9 | 4K / 3840×2160 | 约 810 MiB |
-| 21:9 | 2560×1080 | 约 440 MiB |
-| 21:9 | 3440×1440 | 约 700 MiB |
-| 21:9 | 5120×2160 | 约 1050 MiB |
-| 32:9 | 3840×1080 | 约 610 MiB |
-| 32:9 | 5120×1440 | 约 990 MiB |
-| 4:3 | 1920×1440 | 约 430 MiB |
+| 16:9 | 720p | about 230 MiB |
+| 16:9 | 1080p | about 350 MiB |
+| 16:9 | 1440p | about 540 MiB |
+| 16:9 | 4K / 3840×2160 | about 810 MiB |
+| 21:9 | 2560×1080 | about 440 MiB |
+| 21:9 | 3440×1440 | about 700 MiB |
+| 21:9 | 5120×2160 | about 1050 MiB |
+| 32:9 | 3840×1080 | about 610 MiB |
+| 32:9 | 5120×1440 | about 990 MiB |
+| 4:3 | 1920×1440 | about 430 MiB |
 
-同高度不同宽度的占用接近（按输出像素数计）。该值为帧生成自身增量，不含游戏本体与合成输入纹理。`Engine=XeSS` 时整机专用显存比 DLSS-G 多约 410–530 MiB（RTX 3070，4K 输出，五款游戏实测）。
+Resolutions with the same height but different widths use similar amounts (by output pixel count). The figure is the increase of frame generation itself, not counting the game or the composition input textures. With `Engine=XeSS`, whole-machine dedicated VRAM is about 410–530 MiB more than with DLSS-G (RTX 3070, 4K output, measured on five games).
 
-## 安装与升级
+## Install & upgrade
 
-第一次装 mod 的，照发布包根目录的安装手册 `MANUAL.html`（英文版 `MANUAL.en.html`，双击用浏览器打开）一步一步做。简要步骤：
+If this is your first time installing a mod, follow the install manual `MANUAL.en.html` in the release package root (Chinese: `MANUAL.html`; double-click to open it in a browser) step by step. In short:
 
-1. 完全退出游戏。
-2. 进入游戏实际渲染的 EXE 所在目录（如《黑神话：悟空》为 `...\b1\Binaries\Win64\`）。不确定是哪个目录时，在游戏运行时打开任务管理器的「详细信息」，右键游戏进程 →「打开文件所在的位置」。
-3. 把发布包根目录的 `version.dll`、`dlssg_sm86.ini` 和 `dlssg_sm86\` 这个文件夹复制进去；该目录已有同名 DLL 时先备份原文件。运行库、后端、内核包、XeSS 模型包和超分 snippet 都在 `dlssg_sm86\` 里，代理本身不到 1 MB，**只复制 DLL 不复制文件夹会什么都不发生**。`alternatives\` 平时不用复制。
-4. 启动游戏，在图形设置中开启 DLSS 帧生成，选 2X / 3X / 4X（要 6× 见下面「6X 说明」，需要手动把 `MaxGeneratedFrames` 改成 `5`）。RTX 20 / 30 上原来灰掉的帧生成选项现在能打开，就说明装上了。
-5. 要确认代理确实被加载（RTX 40 / 50 的帧生成本来就能开，只能这样确认）：把 `[Logging] Level` 改成 `2`，开着帧生成玩一会儿再退出，`dlssg_sm86\logs\dlssg_sm86.log` 里有这个游戏 EXE 名的行就是加载了（这个文件也保留以前各次运行的行，看这一次的）。出厂 `Level=1` 只在出错时写日志，`logs` 是空的或者没有这个目录都是正常的。
-6. 游戏不加载 `version.dll`（`Level=2` 下开了帧生成，`dlssg_sm86.log` 里也没有这个 EXE 名的行）：退出游戏，删掉它，从 `alternatives\` 按 `winmm.dll` → `dbghelp.dll` → `dinput8.dll` → `dxgi.dll` → `d3d12.dll` 的顺序一次换一个放到 EXE 旁再试。任何时候只放一个；`dxgi.dll` 和 `d3d12.dll` 在渲染路径上，最后才用，两个不要同时放。说明见 `alternatives\README.md`。
-7. 升级：退出游戏，先删掉旧的代理 DLL、`dlssg_sm86.ini` 和 `dlssg_sm86\` 目录，再复制新版这三样；改过的设置在新 INI 里重新改。0.3.1–0.3.6 让把 `version.dll`、`winmm.dll`、`dbghelp.dll`、`dinput8.dll` 四个代理都复制过去，升级时四个都要删：同一目录里有几个本项目的代理时，进程里第一个被加载的那个运行本 mod，抢到的若是旧版本，跑的就是旧版本。从 0.3.x 升级的人还可以删掉 `%LOCALAPPDATA%\DlssgSm86`——新版不再往那里写任何东西。
-8. 卸载：删掉 `version.dll`（换过的就删换上的那个）、`dlssg_sm86.ini` 和 `dlssg_sm86\` 目录，备份过的原 DLL 放回去。
+1. Quit the game completely.
+2. Go to the directory of the EXE the game actually renders with (for example `...\b1\Binaries\Win64\` for *Black Myth: Wukong*). If unsure, with the game running open Task Manager → "Details", right-click the game process → "Open file location".
+3. Copy `version.dll`, `dlssg_sm86.ini` and the folder `dlssg_sm86\` from the release package root into it; if the directory already has a DLL of the same name, back up the original first. The runtime, backend, kernel pack, XeSS model pack and the super-resolution snippet are all inside `dlssg_sm86\`, and the proxy itself is under 1 MB, so **copying only the DLL and not the folder does nothing**. You normally do not copy `alternatives\`.
+4. Start the game and enable DLSS frame generation in the graphics settings; pick 2X / 3X / 4X (for 6× see "About 6X" below, where `MaxGeneratedFrames` must be changed to `5` by hand). On RTX 20 / 30, if the frame-generation option that used to be greyed out can now be turned on, it is installed.
+5. To confirm the proxy is really loaded (needed because on RTX 40 / 50 frame generation can be enabled anyway): set `[Logging] Level` to `2`, play a while with frame generation on and quit; if `dlssg_sm86\logs\dlssg_sm86.log` has lines with this game's EXE name, it was loaded (the file also keeps lines from earlier runs; look at this one). The factory `Level=1` logs only on errors, so an empty `logs` folder or no such folder at all is normal.
+6. If the game does not load `version.dll` (with frame generation on at `Level=2` there are also no lines with the EXE name in `dlssg_sm86.log`): quit the game, delete it, and from `alternatives\` put one next to the EXE at a time in the order `winmm.dll` → `dbghelp.dll` → `dinput8.dll` → `dxgi.dll` → `d3d12.dll` and try again. Only one at any time; `dxgi.dll` and `d3d12.dll` sit on the render path, so use them last, and never both together. See `alternatives\README.md`.
+7. Upgrading: quit the game, first delete the old proxy DLL(s), `dlssg_sm86.ini` and the `dlssg_sm86\` directory, then copy these three items of the new version; redo any settings you changed in the new INI. 0.3.1–0.3.6 told you to copy four proxies (`version.dll`, `winmm.dll`, `dbghelp.dll`, `dinput8.dll`), so delete all four when upgrading: when a directory has several of this project's proxies, the first one loaded in the process runs this mod, and if the one that wins is an old version, the old version is what runs. If you are upgrading from 0.3.x you can also delete `%LOCALAPPDATA%\DlssgSm86`: the new version no longer writes anything there.
+8. Uninstall: delete `version.dll` (or the replacement you used), `dlssg_sm86.ini` and the `dlssg_sm86\` directory, and put back any original DLL you backed up.
 
-出厂 `dlssg_sm86.ini` 里玩家可能要改的开关：
+Switches in the factory `dlssg_sm86.ini` that players may want to change:
 
-- `[DLSSG] Optimized`：一致性档位 `0`–`3`。出厂 `1` = 全部逐位一致的加速（2026-10-21 起；0.4.0 出厂是 `2`）；`2` = 再加有损图像内核：不再与官方逐位一致，对着真值并排看与 `1` 没有可见差别，每生成帧快 1–3 %；`0` 为原厂数值；`3` 为全部有损加速。2026-10-14 之前在 `[FrameGeneration]`，旧位置不再读取（见上面第 4 条）。
-- `[DLSSG] Preset`：出厂 `A`；这里写什么就跑什么，游戏或驱动配置要 B / C 也不变（`Auto` 已删除，写了按 `A` 并记一条告警）；`B` = 强制 UI 重组（游戏同时交出无 HUD 画面与 UI 平面时才有效）；`C` = FG Lite（更快，画质略低），同样用本项目的加速内核（随 `Optimized` 档位），游戏自带哪个版本的 DLSS-G 都能用。
-- `[FrameGeneration] MaxGeneratedFrames`：出厂 `3` 对应 4X；改成 `5` 对应 6X。这是要求而不是上限：原样告诉游戏（驱动 profile 压不低它），游戏菜单可以选更低的倍率；做不到时（超过 5、`Engine=XeSS` 时超过 3）帧生成不启用并在日志里说明（`max_generated_frames_unsupported`），不会悄悄降。
-- `[FrameGeneration] Engine`：出厂 `DLSS`；`XeSS` = Intel XeSS-FG 模型（model 15，2X 走 model 18 的图）：`MaxGeneratedFrames` 可以是 `1`–`3`，出厂的 `3` 直接可用；`[XeSSFG] Model` 键 2026-10-26 删除，写了不读。`[XeSSFG] FlowResolution`（出厂 `Middle`，越细越慢）与 `UseHudless`（出厂 `Auto` = 与 `0` 相同：整幅画面含 UI 一起插值；`1` = 一律要求，游戏没给就报错退出）只对 XeSS 生效。
-- `[SuperResolution] Mode`：出厂 `Off`。RTX 30 / 20 上 `M-INT8` / `L-INT8` = 所有超分画质档（含 DLAA）都用预设 M / L，跑本项目的 INT8 内核，档位在游戏里选；`M-FP16` / `L-FP16` = 同一预设、NVIDIA 自己的内核（对照用）。画质 / 平衡 / DLAA 档用 M / L 比游戏自己的 K 慢，加速在性能 / 超级性能档。只有这五个值，写别的（包括 0.4.0 的 `On`）超分不启用并记一条 `configuration_invalid`；旧键 `Tier` 不读。RTX 40 / 50 上不起作用。
+- `[DLSSG] Optimized`: consistency tier `0`–`3`. Factory `1` = all bit-identical accelerations (since 2026-10-21; 0.4.0's factory was `2`); `2` = additionally the lossy image kernels: no longer bit-identical with the official output, no visible difference from `1` in side-by-side comparison against ground truth, 1–3 % faster per generated frame; `0` = stock numerics; `3` = all lossy accelerations. Before 2026-10-14 it lived in `[FrameGeneration]`; the old location is no longer read (see item 4 above).
+- `[DLSSG] Preset`: factory `A`; what you write here is what runs, even if the game or a driver profile asks for B / C (`Auto` was removed: writing it runs as `A` and logs a warning); `B` = force UI recomposition (effective only when the game hands over both a HUD-less image and a UI plane); `C` = FG Lite (faster, slightly lower quality), which also uses this project's accelerated kernels (following the `Optimized` tier) and works whichever DLSS-G version the game ships.
+- `[FrameGeneration] MaxGeneratedFrames`: factory `3` means 4X; change to `5` for 6X. This is a request, not a cap: it is passed to the game unchanged (a driver profile cannot push it lower), and the game menu can choose a lower multiplier. When it cannot be done (above 5, or above 3 with `Engine=XeSS`), frame generation is not enabled and the log explains why (`max_generated_frames_unsupported`); it never silently lowers it.
+- `[FrameGeneration] Engine`: factory `DLSS`; `XeSS` = Intel XeSS-FG model (model 15, with 2X using model 18's graph): `MaxGeneratedFrames` may be `1`–`3`, and the factory `3` works directly; the `[XeSSFG] Model` key was removed on 2026-10-26 and is ignored. `[XeSSFG] FlowResolution` (factory `Middle`; finer is slower) and `UseHudless` (factory `Auto` = same as `0`: the whole image, UI included, is interpolated; `1` = always required, error exit if the game does not supply it) apply to XeSS only.
+- `[SuperResolution] Mode`: factory `Off`. On RTX 30 / 20, `M-INT8` / `L-INT8` = every super-resolution quality tier (DLAA included) uses preset M / L and runs this project's INT8 kernels, while the tier is still chosen in-game; `M-FP16` / `L-FP16` = the same preset on NVIDIA's own kernels (for comparison). For the Quality / Balanced / DLAA tiers, M / L is slower than the game's own K; the speed-up is in Performance / Ultra Performance. There are only these five values; anything else (including 0.4.0's `On`) leaves super resolution disabled and logs a `configuration_invalid`; the old `Tier` key is not read. It has no effect on RTX 40 / 50.
 
-出厂文件里其余几项（`Enabled`、日志、运行库来源 `[Runtime] Mode=Bundled`）一般不用动；更多诊断/兼容项不在出厂文件中、取安全默认，完整清单见 [`docs/INSTALL.md`](docs/INSTALL.md)。某个键的值写错时不会换成默认值：日志记一条 `configuration_invalid`，该键所属的功能不启用（帧生成的键 → 帧生成不启用，同 `Enabled=0`；超分的键 → 超分不启用；日志 / 调试的键 → 只关那一项诊断）。
+The remaining items in the factory file (`Enabled`, logging, runtime source `[Runtime] Mode=Bundled`) normally need no change; more diagnostic / compatibility items are not in the factory file and take safe defaults; for the complete list see [`docs/INSTALL.en.md`](docs/INSTALL.en.md). A wrongly written key value does not fall back to a default: the log records one `configuration_invalid` and the feature the key belongs to is not enabled (a frame-generation key → frame generation not enabled, same as `Enabled=0`; a super-resolution key → super resolution not enabled; a logging / debugging key → only that one diagnostic is turned off).
 
-## 杀软误报与签名
+## Antivirus false positives & signing
 
-发布包里本项目自己的 DLL 都做了代码签名：根目录的 `version.dll`、`alternatives\` 下五个备用代理，以及 `dlssg_sm86\` 下的后端和三个资源包（帧生成内核 `fg_kernels.dll`、超分内核 `sr_kernels.dll`、XeSS 模型 `xefg_kernels.dll`），共 10 个（`dlssg_sm86\runtime\` 与 `dlssg_sm86\sr\` 里 NVIDIA 的运行库和超分 snippet 保留 NVIDIA 自己的签名，不动）。自签名证书仅验证签名者身份与文件完整性，不提供 Windows 默认信任；首次运行 Windows SmartScreen 仍可能提示「未知发布者」——这是基于信誉的提示，与杀软报毒是两回事。本次使用自签证书 `CN=DLSSG for SM86 (self-signed)`，SHA-1 指纹 `85BA66762F851E49148D706915D09026281418E6`；可在文件属性→数字签名或用 `signtool verify /pa` 核对签名者与指纹。
+The project's own DLLs in the release package are all code-signed: `version.dll` in the root, the five spare proxies under `alternatives\`, and the backend and the three resource packs under `dlssg_sm86\` (frame-generation kernels `fg_kernels.dll`, super-resolution kernels `sr_kernels.dll`, XeSS model `xefg_kernels.dll`), 10 files in all. NVIDIA's runtime and super-resolution snippet in `dlssg_sm86\runtime\` and `dlssg_sm86\sr\` keep NVIDIA's own signature and are untouched. A self-signed certificate only proves the signer's identity and file integrity and is not trusted by Windows by default; on first run Windows SmartScreen may still show "Unknown publisher". That is a reputation-based prompt and a different thing from an antivirus detection. This release uses the self-signed certificate `CN=DLSSG for SM86 (self-signed)`, SHA-1 thumbprint `85BA66762F851E49148D706915D09026281418E6`; you can check the signer and thumbprint under file Properties → Digital Signatures or with `signtool verify /pa`. See `docs/SIGNING.md` for how signing is done.
 
-## 性能
+## Performance
 
-下面的数都来自本项目自己的计时（每次 Evaluate 前后的 D3D12 时间戳，或 `[Logging] FrameTiming` 日志）。离线 GPU 毫秒数衡量的是帧生成 / 超分自身的开销，不等于游戏内帧率增幅。
+All numbers below come from this project's own timing (D3D12 timestamps around each Evaluate, or the `[Logging] FrameTiming` log). Offline GPU milliseconds measure the overhead of frame generation / super resolution itself; they do not equal the in-game frame-rate gain.
 
-### 帧生成：真实游戏抓取（RTX 3070，离线回放）
+### Frame generation: real game captures (RTX 3070, offline replay)
 
-RTX 3070，驱动 617.14，0.4.0 测试包完整运行（run_all）。游戏里录下的输入（赛博朋克 2077、黑神话：悟空）经完整路线回放（代理 → 后端 → NVIDIA 运行库 310.9.16 或 XeSS 引擎）；每次运行去掉前 4 个真实帧，4 轮所有帧取中位数。单位为每个生成帧的 GPU 毫秒数，括号为对 DLSS 默认的变化（负数 = 更快）。DLSS 默认 = 0.4.0 的出厂 INI（`Optimized=2`、`Preset=Auto`；2026-10-21 起出厂档位是 `1`，每生成帧慢 1–3 %，见下面 3080 Ti 表）；原厂内核 = `Optimized=0`。
-
-**2X**
-
-| 抓取 | DLSS 默认 | 预设 C | XeSS Middle | XeSS Coarse | XeSS Fine | 原厂内核 |
-|---|---:|---:|---:|---:|---:|---:|
-| 赛博朋克 2077 1440p | 2.554 | 1.694（−33.7 %） | 2.974（+16.4 %） | 2.344（−8.2 %） | 3.828（+49.9 %） | 3.639（+42.4 %） |
-| 黑神话：悟空 1440p | 2.581 | 1.745（−32.4 %） | 3.266（+26.5 %） | 2.634（+2.0 %） | 4.164（+61.3 %） | 3.657（+41.7 %） |
-| 赛博朋克 2077 4K | 3.557 | 2.499（−29.7 %） | 6.379（+79.3 %） | 5.059（+42.2 %） | 8.296（+133.2 %） | 4.407（+23.9 %） |
-| 黑神话：悟空 4K | 3.756 | 2.679（−28.7 %） | 6.974（+85.7 %） | 5.682（+51.3 %） | 9.025（+140.3 %） | 4.560（+21.4 %） |
-
-**4X**（每个生成帧 = 一个真实帧的 3 次 Evaluate 之和 ÷ 3）：赛博朋克 2077 4K 默认 2.532 ms，预设 C 1.392 ms（−45.0 %）；黑神话：悟空 4K 默认 2.733 ms，预设 C 1.517 ms（−44.5 %）。
-
-### 帧生成：真实游戏抓取（RTX 3080 Ti，离线回放）
-
-RTX 3080 Ti，驱动 610.88，同一测试包完整运行（测试者机器）；方法与上表相同。这两段计时期间 GPU 稳定在 1665 MHz（低于合成场景计时时的 1950 MHz），绝对值偏保守、对比有效。
+RTX 3070, driver 617.14, complete run (run_all) of the 0.4.0 test package. Inputs recorded in the games (Cyberpunk 2077, Black Myth: Wukong) were replayed through the whole route (proxy → backend → NVIDIA runtime 310.9.16 or the XeSS engine); the first 4 real frames of each run are dropped and the median over all frames of 4 rounds is taken. Units are GPU milliseconds per generated frame, with the change against the DLSS default in brackets (negative = faster). DLSS default = 0.4.0's factory INI (`Optimized=2`, `Preset=Auto`; since 2026-10-21 the factory tier is `1`, which is 1–3 % slower per generated frame, see the 3080 Ti table below); stock kernels = `Optimized=0`.
 
 **2X**
 
-| 抓取 | DLSS 默认 | 预设 C | XeSS Middle | XeSS Coarse | XeSS Fine | 原厂内核 |
+| Capture | DLSS default | Preset C | XeSS Middle | XeSS Coarse | XeSS Fine | Stock kernels |
 |---|---:|---:|---:|---:|---:|---:|
-| 赛博朋克 2077 1440p | 1.651 | 1.032（−37.5 %） | 2.235（+35.4 %） | 1.786（+8.2 %） | 2.791（+69.1 %） | 2.381（+44.2 %） |
-| 黑神话：悟空 1440p | 1.663 | 1.062（−36.1 %） | 2.359（+41.9 %） | 1.911（+14.9 %） | 2.936（+76.6 %） | 2.391（+43.8 %） |
-| 赛博朋克 2077 4K | 2.171 | 1.473（−32.2 %） | 4.640（+113.7 %） | 3.668（+68.9 %） | 5.908（+172.1 %） | 2.860（+31.7 %） |
-| 黑神话：悟空 4K | 2.275 | 1.577（−30.7 %） | 4.763（+109.3 %） | 3.822（+68.0 %） | 6.060（+166.3 %） | 2.935（+29.0 %） |
+| Cyberpunk 2077 1440p | 2.554 | 1.694 (−33.7 %) | 2.974 (+16.4 %) | 2.344 (−8.2 %) | 3.828 (+49.9 %) | 3.639 (+42.4 %) |
+| Black Myth: Wukong 1440p | 2.581 | 1.745 (−32.4 %) | 3.266 (+26.5 %) | 2.634 (+2.0 %) | 4.164 (+61.3 %) | 3.657 (+41.7 %) |
+| Cyberpunk 2077 4K | 3.557 | 2.499 (−29.7 %) | 6.379 (+79.3 %) | 5.059 (+42.2 %) | 8.296 (+133.2 %) | 4.407 (+23.9 %) |
+| Black Myth: Wukong 4K | 3.756 | 2.679 (−28.7 %) | 6.974 (+85.7 %) | 5.682 (+51.3 %) | 9.025 (+140.3 %) | 4.560 (+21.4 %) |
 
-**4X**：赛博朋克 2077 4K 默认 1.567 ms，预设 C 0.822 ms（−47.5 %）；黑神话：悟空 4K 默认 1.666 ms，预设 C 0.897 ms（−46.2 %）。
+**4X** (each generated frame = the sum of the 3 Evaluates of one real frame ÷ 3): Cyberpunk 2077 4K default 2.532 ms, preset C 1.392 ms (−45.0 %); Black Myth: Wukong 4K default 2.733 ms, preset C 1.517 ms (−44.5 %).
 
-### 超分 INT8 对同预设 FP16（RTX 3070，离线）
+### Frame generation: real game captures (RTX 3080 Ti, offline replay)
 
-同一测试包。一次超分 Evaluate 的 GPU 时间，单位 ms：每次运行 64 个测量帧取中位数，3 轮再取中位。同一运行库（310.7.129）、同一预设，只比 INT8 与 FP16。两族内核分别对应巫师 3 / Resonance / 地平线 6 / 蜘蛛侠（mvlo）与黑神话：悟空 / 霍格沃茨（mvhi）。
+RTX 3080 Ti, driver 610.88, full run of the same test package (on the tester's machine); same method as the table above. During these timings the GPU held a steady 1665 MHz (lower than the 1950 MHz during the synthetic-scene timing), so absolute values are conservative and the comparisons remain valid.
 
-| 族 | 输出 | 档 | L FP16 | L INT8 | L 变化 | M FP16 | M INT8 | M 变化 |
+**2X**
+
+| Capture | DLSS default | Preset C | XeSS Middle | XeSS Coarse | XeSS Fine | Stock kernels |
+|---|---:|---:|---:|---:|---:|---:|
+| Cyberpunk 2077 1440p | 1.651 | 1.032 (−37.5 %) | 2.235 (+35.4 %) | 1.786 (+8.2 %) | 2.791 (+69.1 %) | 2.381 (+44.2 %) |
+| Black Myth: Wukong 1440p | 1.663 | 1.062 (−36.1 %) | 2.359 (+41.9 %) | 1.911 (+14.9 %) | 2.936 (+76.6 %) | 2.391 (+43.8 %) |
+| Cyberpunk 2077 4K | 2.171 | 1.473 (−32.2 %) | 4.640 (+113.7 %) | 3.668 (+68.9 %) | 5.908 (+172.1 %) | 2.860 (+31.7 %) |
+| Black Myth: Wukong 4K | 2.275 | 1.577 (−30.7 %) | 4.763 (+109.3 %) | 3.822 (+68.0 %) | 6.060 (+166.3 %) | 2.935 (+29.0 %) |
+
+**4X**: Cyberpunk 2077 4K default 1.567 ms, preset C 0.822 ms (−47.5 %); Black Myth: Wukong 4K default 1.666 ms, preset C 0.897 ms (−46.2 %).
+
+### Super-resolution INT8 vs. same-preset FP16 (RTX 3070, offline)
+
+Same test package. GPU time of one super-resolution Evaluate, in ms: 64 measured frames per run, median, then the median of 3 rounds. Same runtime (310.7.129) and same preset; only INT8 versus FP16 is compared. The two kernel families correspond to The Witcher 3 / Resonance / Horizon 6 / Spider-Man (mvlo) and Black Myth: Wukong / Hogwarts (mvhi).
+
+| Family | Output | Tier | L FP16 | L INT8 | L change | M FP16 | M INT8 | M change |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-| mvlo | 3840×2160 | 性能 | 7.443 | 6.459 | −13.2 % | 6.065 | 4.905 | −19.1 % |
-| mvlo | 2560×1440 | 性能 | 3.415 | 2.993 | −12.4 % | 2.787 | 2.294 | −17.7 % |
-| mvlo | 1920×1080 | 性能 | 1.965 | 1.736 | −11.7 % | 1.615 | 1.353 | −16.2 % |
-| mvlo | 1920×1080 | 超级性能 | 1.258 | 1.179 | −6.3 % | 1.066 | 0.967 | −9.3 % |
-| mvhi | 3840×2160 | 性能 | 7.305 | 6.127 | −16.1 % | 5.914 | 4.623 | −21.8 % |
-| mvhi | 2560×1440 | 性能 | 3.346 | 2.845 | −15.0 % | 2.719 | 2.171 | −20.2 % |
-| mvhi | 1920×1080 | 性能 | 1.934 | 1.656 | −14.4 % | 1.581 | 1.278 | −19.2 % |
-| mvhi | 1920×1080 | 超级性能 | 1.235 | 1.106 | −10.4 % | 1.057 | 0.914 | −13.5 % |
+| mvlo | 3840×2160 | Performance | 7.443 | 6.459 | −13.2 % | 6.065 | 4.905 | −19.1 % |
+| mvlo | 2560×1440 | Performance | 3.415 | 2.993 | −12.4 % | 2.787 | 2.294 | −17.7 % |
+| mvlo | 1920×1080 | Performance | 1.965 | 1.736 | −11.7 % | 1.615 | 1.353 | −16.2 % |
+| mvlo | 1920×1080 | Ultra Performance | 1.258 | 1.179 | −6.3 % | 1.066 | 0.967 | −9.3 % |
+| mvhi | 3840×2160 | Performance | 7.305 | 6.127 | −16.1 % | 5.914 | 4.623 | −21.8 % |
+| mvhi | 2560×1440 | Performance | 3.346 | 2.845 | −15.0 % | 2.719 | 2.171 | −20.2 % |
+| mvhi | 1920×1080 | Performance | 1.934 | 1.656 | −14.4 % | 1.581 | 1.278 | −19.2 % |
+| mvhi | 1920×1080 | Ultra Performance | 1.235 | 1.106 | −10.4 % | 1.057 | 0.914 | −13.5 % |
 
-### 超分 INT8 对同预设 FP16（RTX 3080 Ti，离线）
+### Super-resolution INT8 vs. same-preset FP16 (RTX 3080 Ti, offline)
 
-同一测试包、同一方法，GPU 1665 MHz。
+Same test package, same method, GPU at 1665 MHz.
 
-| 族 | 输出 | 档 | L FP16 | L INT8 | L 变化 | M FP16 | M INT8 | M 变化 |
+| Family | Output | Tier | L FP16 | L INT8 | L change | M FP16 | M INT8 | M change |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-| mvlo | 3840×2160 | 性能 | 5.338 | 4.578 | −14.2 % | 4.341 | 3.455 | −20.4 % |
-| mvlo | 2560×1440 | 性能 | 2.484 | 2.151 | −13.4 % | 2.028 | 1.644 | −18.9 % |
-| mvlo | 1920×1080 | 性能 | 1.465 | 1.333 | −9.0 % | 1.208 | 1.047 | −13.4 % |
-| mvlo | 1920×1080 | 超级性能 | 1.000 | 0.948 | −5.2 % | 0.849 | 0.791 | −6.9 % |
-| mvhi | 3840×2160 | 性能 | 5.262 | 4.355 | −17.2 % | 4.252 | 3.239 | −23.8 % |
-| mvhi | 2560×1440 | 性能 | 2.437 | 2.045 | −16.1 % | 1.991 | 1.545 | −22.4 % |
-| mvhi | 1920×1080 | 性能 | 1.441 | 1.272 | −11.8 % | 1.186 | 0.994 | −16.1 % |
-| mvhi | 1920×1080 | 超级性能 | 0.979 | 0.892 | −8.9 % | 0.848 | 0.746 | −12.0 % |
+| mvlo | 3840×2160 | Performance | 5.338 | 4.578 | −14.2 % | 4.341 | 3.455 | −20.4 % |
+| mvlo | 2560×1440 | Performance | 2.484 | 2.151 | −13.4 % | 2.028 | 1.644 | −18.9 % |
+| mvlo | 1920×1080 | Performance | 1.465 | 1.333 | −9.0 % | 1.208 | 1.047 | −13.4 % |
+| mvlo | 1920×1080 | Ultra Performance | 1.000 | 0.948 | −5.2 % | 0.849 | 0.791 | −6.9 % |
+| mvhi | 3840×2160 | Performance | 5.262 | 4.355 | −17.2 % | 4.252 | 3.239 | −23.8 % |
+| mvhi | 2560×1440 | Performance | 2.437 | 2.045 | −16.1 % | 1.991 | 1.545 | −22.4 % |
+| mvhi | 1920×1080 | Performance | 1.441 | 1.272 | −11.8 % | 1.186 | 0.994 | −16.1 % |
+| mvhi | 1920×1080 | Ultra Performance | 0.979 | 0.892 | −8.9 % | 0.848 | 0.746 | −12.0 % |
 
-### 游戏内（RTX 3070，4K 输出，2X）
+### In game (RTX 3070, 4K output, 2X)
 
-RTX 3070，驱动 617.14，`[Logging] FrameTiming=1` 的日志，游戏进世界后静置窗口 60 s 的中位数，档位 2，XeSS 为 `Middle`。每生成帧 = 帧生成 GPU 时间；真实帧率 = 游戏渲染的帧（显示帧率为其 2 倍）。
+RTX 3070, driver 617.14, `[Logging] FrameTiming=1` logs; median over a 60 s idle window after entering the world, tier 2, XeSS at `Middle`. Per generated frame = GPU time of frame generation; real frame rate = frames the game renders (the displayed frame rate is 2× that).
 
-| 游戏 | DLSS 默认 (ms) | XeSS (ms) | XeSS 真实帧率 | 预设 C (ms) | 预设 C 真实帧率 |
+| Game | DLSS default (ms) | XeSS (ms) | XeSS real frame rate | Preset C (ms) | Preset C real frame rate |
 |---|---:|---:|---:|---:|---:|
-| 赛博朋克 2077 | 3.755 | 6.733（+79 %） | −8.6..−9.7 % | 2.748（−27 %） | +3.6 % |
-| 黑神话：悟空 | 4.035 | 7.308（+81 %） | −11.0 % | 3.085（−24 %） | +4.3 % |
-| 巫师 3 | 3.973 | 7.166（+80 %） | −15.0 % | 2.974（−25 %） | −0.8 % |
-| A Plague Tale: Resonance | 3.943 | 6.968（+77 %） | −28.1 % | 2.947（−25 %） | +9.5 % |
-| 极限竞速 地平线 6 | 3.856 | 6.847（+78 %） | −8.0 % | 2.803（−27 %） | +7.4 % |
+| Cyberpunk 2077 | 3.755 | 6.733 (+79 %) | −8.6..−9.7 % | 2.748 (−27 %) | +3.6 % |
+| Black Myth: Wukong | 4.035 | 7.308 (+81 %) | −11.0 % | 3.085 (−24 %) | +4.3 % |
+| The Witcher 3 | 3.973 | 7.166 (+80 %) | −15.0 % | 2.974 (−25 %) | −0.8 % |
+| A Plague Tale: Resonance | 3.943 | 6.968 (+77 %) | −28.1 % | 2.947 (−25 %) | +9.5 % |
+| Forza Horizon 6 | 3.856 | 6.847 (+78 %) | −8.0 % | 2.803 (−27 %) | +7.4 % |
 
-赛博朋克 2077：路径追踪 + 光线重建，DLSS 超级性能；黑神话：悟空：DLSS 50 %。真实帧率的变化取决于游戏的瓶颈，巫师 3 上预设 C 每生成帧快 1 ms 但帧率不变。
+Cyberpunk 2077: path tracing + ray reconstruction, DLSS Ultra Performance; Black Myth: Wukong: DLSS 50 %. How much the real frame rate changes depends on where the game's bottleneck is: on The Witcher 3, preset C is 1 ms faster per generated frame but the frame rate does not change.
 
-### 超分 INT8 游戏内（RTX 3070，巫师 3）
+### Super-resolution INT8 in game (RTX 3070, The Witcher 3)
 
-RTX 3070，驱动 617.14，帧生成关，进世界后静置窗口的帧率；对照是同一预设的 FP16（`Mode=M-FP16` / `L-FP16`），INT8 与 FP16 交替各跑 2–4 次，表中为均值，提升按中位数。预设 M 的几行是 0.4.0 的出货内核集（10-10 测），L 的几行 10-09 测（这一族的 L 集合之后没有变）。
+RTX 3070, driver 617.14, frame generation off, frame rate over an idle window after entering the world; the baseline is the same-preset FP16 (`Mode=M-FP16` / `L-FP16`), INT8 and FP16 alternated 2–4 runs each, the table shows means and the gain is by median. The preset M rows are 0.4.0's shipped kernel set (measured 10-10); the L rows were measured on 10-09 (the L set of this family has not changed since).
 
-| 输出 | 档（渲染） | 预设 | FP16 fps | INT8 fps | 提升 | 每帧 |
+| Output | Tier (render) | Preset | FP16 fps | INT8 fps | Gain | Per frame |
 |---|---|---|---:|---:|---:|---|
-| 3840×2160 | 性能（1920×1080） | M | 47.15 | 50.85 | +7.85 % | 21.21 → 19.67 ms（−1.54） |
-| 2560×1440 | 性能（1280×720） | M | 85.48 | 91.34 | +6.86 % | 11.70 → 10.95 ms（−0.75） |
-| 1920×1080 | 性能（960×540） | M | 122.14 | 128.35 | +5.08 % | 8.19 → 7.79 ms（−0.40） |
-| 3840×2160 | 超级性能（1280×720） | L | 63.56 | 66.13 | +4.0 % | 15.73 → 15.12 ms（−0.61） |
-| 2560×1440 | 超级性能（853×480） | L | 109.42 | 111.80 | +2.2 % | 9.14 → 8.94 ms（−0.19） |
-| 1920×1080 | 超级性能（640×360） | L | 145.83 | 147.57 | +1.2 % | 6.86 → 6.78 ms（−0.08） |
+| 3840×2160 | Performance (1920×1080) | M | 47.15 | 50.85 | +7.85 % | 21.21 → 19.67 ms (−1.54) |
+| 2560×1440 | Performance (1280×720) | M | 85.48 | 91.34 | +6.86 % | 11.70 → 10.95 ms (−0.75) |
+| 1920×1080 | Performance (960×540) | M | 122.14 | 128.35 | +5.08 % | 8.19 → 7.79 ms (−0.40) |
+| 3840×2160 | Ultra Performance (1280×720) | L | 63.56 | 66.13 | +4.0 % | 15.73 → 15.12 ms (−0.61) |
+| 2560×1440 | Ultra Performance (853×480) | L | 109.42 | 111.80 | +2.2 % | 9.14 → 8.94 ms (−0.19) |
+| 1920×1080 | Ultra Performance (640×360) | L | 145.83 | 147.57 | +1.2 % | 6.86 → 6.78 ms (−0.08) |
 
-除最后一行外，提升都超过同配置重复运行差的两倍；1080p 超级性能 L 在一次运行的波动之内，但 4 次 INT8 全部高于 4 次 FP16。画质：预设 M 静止画面的闪烁略多于 FP16（游戏内静止像素的帧间稳定度 61.8 对 62.5 dB），对真值的 PSNR 不低于 FP16；预设 L 与 FP16 相差 ≤ 0.6 dB。
+Except for the last row, the gains exceed twice the repeat-to-repeat difference of the same configuration; 1080p Ultra Performance L is within one run's fluctuation, but all 4 INT8 runs are above all 4 FP16 runs. Quality: with preset M, still images flicker slightly more than FP16 (in-game inter-frame stability of still pixels 61.8 vs 62.5 dB), and PSNR against ground truth is not lower than FP16; with preset L the difference from FP16 is ≤ 0.6 dB.
 
-### 帧生成整组 GPU 时间（RTX 3080 Ti，合成场景）
+### Whole-group frame-generation GPU time (RTX 3080 Ti, synthetic scene)
 
-RTX 3080 Ti，驱动 610.88，0.4.0 测试包（测试者机器）。单位为每个真实帧对应整组帧生成的 GPU 毫秒数（一组 Evaluate 一次提交的跨度）：每次运行 256 组取中位数，4 轮再取中位；降低 = (tier0 − 当前) / tier0。tier0 = 原厂内核（`Optimized=0`），tier1 = 逐位一致的加速（`1`，出厂默认），tier2 = 有损档（`2`，0.4.0 的出厂默认）。同一包的一致性检查与 RTX 3070 参考逐位相同：帧生成 18/18、真实抓取 28/28、超分 32/32、超分 `Mode=On` 4/4。
+RTX 3080 Ti, driver 610.88, 0.4.0 test package (on the tester's machine). Units are GPU milliseconds of the whole frame-generation group per real frame (the span of one group of Evaluates submitted together): 256 groups per run, median, then the median of 4 rounds; reduction = (tier0 − current) / tier0. tier0 = stock kernels (`Optimized=0`), tier1 = bit-identical acceleration (`1`, factory default), tier2 = lossy tier (`2`, 0.4.0's factory default). The consistency checks of the same package are bit-identical with the RTX 3070 reference: frame generation 18/18, real captures 28/28, super resolution 32/32, super resolution `Mode=On` 4/4.
 
-| 分辨率 | 倍率 | tier0 (ms) | tier1 (ms) | 降低 | tier2 (ms) | 降低 |
+| Resolution | Multiplier | tier0 (ms) | tier1 (ms) | Reduction | tier2 (ms) | Reduction |
 |---|---|---:|---:|---:|---:|---:|
 | 1080p | 2X | 1.364 | 0.926 | 32.1 % | 0.917 | 32.8 % |
 | 1080p | 3X | 1.942 | 1.423 | 26.7 % | 1.400 | 27.9 % |
@@ -281,82 +363,80 @@ RTX 3080 Ti，驱动 610.88，0.4.0 测试包（测试者机器）。单位为�
 | 4K | 5X | 6.437 | 5.212 | 19.0 % | 5.054 | 21.5 % |
 | 4K | 6X | 7.760 | 6.319 | 18.6 % | 6.123 | 21.1 % |
 
-越低分辨率、越低倍率收益越大（更接近启动/延迟受限）。
+The lower the resolution and the lower the multiplier, the bigger the gain (closer to being launch / latency bound).
 
-## 插帧后帧率怎么估算
+## Estimating the frame rate with frame generation
 
-先在相同场景、输出分辨率、DLSS 超分档位与画质设置下关闭帧生成，得到帧率 `F_off`。用 `1000 / F_off` 换算基础帧时间，再从上表按分辨率、倍率与内核配置选整组插帧耗时 `T_FG`（ms）。
+First, with frame generation off and the same scene, output resolution, DLSS super-resolution tier and quality settings, get the frame rate `F_off`. Convert it to the base frame time with `1000 / F_off`, then pick the whole-group frame-generation time `T_FG` (ms) from the table above by resolution, multiplier and kernel configuration.
 
 ```text
-基础帧时间   T_base (ms) = 1000 / F_off
-帧组时间     T_group (ms) ≈ T_base + T_FG
-真实帧/帧组速率 G (组/s)  ≈ 1000 / T_group
-插帧后总帧率 F_out (FPS)  ≈ G × M = 1000 × M / (1000 / F_off + T_FG)
+Base frame time        T_base (ms) = 1000 / F_off
+Group time             T_group (ms) ≈ T_base + T_FG
+Real-frame/group rate  G (groups/s) ≈ 1000 / T_group
+Total frame rate       F_out (FPS)  ≈ G × M = 1000 × M / (1000 / F_off + T_FG)
 ```
 
-`M` 为倍率（2X…6X 对应 2…6）。一组含一个真实帧与 `M − 1` 个生成帧；上表的 `T_FG` 已包含整组生成帧与共用预处理，不能再乘 `M − 1`。开启插帧后的真实帧/帧组速率 `G` 低于关闭插帧的 `F_off`。
+`M` is the multiplier (2X…6X correspond to 2…6). A group contains one real frame and `M − 1` generated frames; the `T_FG` in the table already includes the whole group of generated frames and the shared preprocessing, so do not multiply it by `M − 1` again. With frame generation on, the real-frame / group rate `G` is lower than `F_off` with frame generation off.
 
-例：关闭帧生成约 **50 FPS**（基础帧时间 20 ms），取上表 RTX 3080 Ti **4K 4X** 的 `T_FG`：
+Example: with frame generation off at about **50 FPS** (base frame time 20 ms), take `T_FG` from the RTX 3080 Ti **4K 4X** row above:
 
-| 内核 | T_FG (ms) | 帧组时间 (ms) | 帧组速率 (组/s) | 估计总帧率 |
+| Kernels | T_FG (ms) | Group time (ms) | Group rate (groups/s) | Estimated total frame rate |
 |---|---|---|---|---|
-| 原厂内核（tier0） | 5.112 | 25.112 | 39.8 | 159.3 FPS |
-| 出厂默认（tier1） | 4.106 | 24.106 | 41.5 | 165.9 FPS |
-| 有损档（tier2） | 3.987 | 23.987 | 41.7 | 166.8 FPS |
+| Stock kernels (tier0) | 5.112 | 25.112 | 39.8 | 159.3 FPS |
+| Factory default (tier1) | 4.106 | 24.106 | 41.5 | 165.9 FPS |
+| Lossy tier (tier2) | 3.987 | 23.987 | 41.7 | 166.8 FPS |
 
-其他分辨率/倍率换用对应行，`F_off` 填该设置下自己实测的值。这是把基础渲染时间与插帧组开销相加的粗略估计；GPU 资源争用、同步、CPU 开销、限帧与刷新率都会影响实际结果，估计值不保证等于计数器读数或实际显示帧率。
+For other resolutions / multipliers use the matching row, and enter your own measured `F_off` for that setting. This is a rough estimate adding the base render time and the frame-generation group overhead; GPU resource contention, synchronisation, CPU overhead, frame caps and refresh rate all affect the real result, and the estimate is not guaranteed to equal a counter reading or the actual displayed frame rate.
 
-## 6X 说明
+## About 6X
 
-6X（每真实帧生成 5 帧）为 NVIDIA DLSS 4.5 的 Dynamic Multi Frame Generation。随包的运行库支持该能力，本项目使其能在 Ampere 上运行（只限 `Engine=DLSS`）。
+6X (5 generated frames per real frame) is NVIDIA DLSS 4.5's Dynamic Multi Frame Generation. The bundled runtime supports it, and this project makes it work on Ampere (`Engine=DLSS` only).
 
-**出厂 `MaxGeneratedFrames` 是 `3`（4X），6X 需要自己改。** 原因是自带 Dynamic MFG 的游戏会默认直接跑到这里写的数，`5` 对多数人偏高（公开仓库 issue #497 / #499）；把它改回 `5` 随时可以拿到 6X。是否真的得到 6X 还取决于游戏：
+**The factory `MaxGeneratedFrames` is `3` (4X); you must change it yourself for 6X.** The reason is that games with their own Dynamic MFG run straight up to the number written here by default, and `5` is too high for most people (public-repository issues #497 / #499); you can set it back to `5` at any time to get 6X. Whether you really get 6X also depends on the game:
 
-- 游戏自身支持 6X（自带较新的 Streamline 帧生成插件、菜单中可选 6X 或 Dynamic MFG）：把 `MaxGeneratedFrames` 改成 `5` 即可，实测可稳定运行 6X。
-- 游戏仅支持 4X（自带较旧的 4X 插件，当前多数游戏如此）：上限由游戏侧插件决定，本项目无法将其抬到 6X（该插件在初始化时按 4X 铺设内部呈现队列，强行加帧会越界导致帧生成失效或崩溃）。这类游戏请使用 4X。
+- The game itself supports 6X (ships a newer Streamline frame-generation plug-in, and the menu offers 6X or Dynamic MFG): change `MaxGeneratedFrames` to `5` and that is all; 6X was measured to run stably.
+- The game supports only 4X (ships an older 4X plug-in, which is the case for most games at present): the limit is set by the game-side plug-in and this project cannot raise it to 6X (that plug-in lays out its internal presentation queue for 4X at initialization, and forcing more frames goes out of bounds and breaks frame generation or crashes). Use 4X with such games.
 
-## 实测反馈
+## Field feedback
 
-《黑神话：悟空》、《赛博朋克 2077》与《极限竞速 地平线 6》实测可正常开启 4X；《A Plague Tale: Resonance》在帧生成选「动态 / 自动」时默认跑 6X。0.4.0 在 RTX 3070 上于这四款与《巫师 3》共五款游戏中各跑过 DLSS 默认、预设 C 与 XeSS（2X、4K 输出），没有崩溃、TDR 或设备移除，截图中 HUD 完整。插帧观感依赖基础帧率：基础帧率偏低时可能出现画面破坏与边缘效应，倍率越高越明显，部分游戏即使 4X 也需适当降低画质设置、把基础帧率抬高后才有较好观感；这是帧生成在帧率余量不足时的固有表现，非本项目缺陷。
+*Black Myth: Wukong*, *Cyberpunk 2077* and *Forza Horizon 6* were tested and enable 4X normally; *A Plague Tale: Resonance* defaults to 6X when frame generation is set to "Dynamic / Auto". On an RTX 3070, 0.4.0 ran DLSS default, preset C and XeSS (2X, 4K output) in each of these four games plus *The Witcher 3*, five games in all, with no crash, TDR or device removal, and the HUD complete in the screenshots. How frame interpolation looks depends on the base frame rate: with a low base frame rate, image corruption and edge artefacts can appear and get more obvious with higher multipliers, and in some games even 4X needs lower quality settings to raise the base frame rate before it looks good; this is how frame generation inherently behaves when frame-rate headroom is lacking, not a defect of this project.
 
-## 已知问题
+## Known issues
 
-- XeSS-FG（`Engine=XeSS`）是可选项，默认仍是 DLSS-G。在 RTX 30 上它每生成帧比 DLSS-G 慢得多（4K：RTX 3070 +77..+86 %、约 +3 ms，RTX 3080 Ti 离线 +109..+114 %），真实帧率低 8..15 %，《A Plague Tale: Resonance》低 28 %（多出的等待原因未查明）；显存多约 0.4–0.5 GB；`Engine=XeSS` 到 4X（`MaxGeneratedFrames` 1–3），写 4 以上帧生成不启用（`max_generated_frames_unsupported`）。HUD-less 开 / 关的画质差别还没有做逐帧对比。XeSS 下 `[Debug] Capture` 录不到东西。
-- XeSS-FG（model 15）的开销（RTX 3070，离线完整路线回放，`Middle`、DIRECT，每个真实帧连同它的生成帧的 GPU 毫秒数）：4X 时 1440p 4.5–5.0 ms，DLSS 默认 5.3–5.4 ms（快 8–15 %）；4K 10.3–10.8 ms，DLSS 默认 7.9–8.5 ms（慢 27–30 %）；预设 C 在所有档上最快。2X 走 model 18 的图，比原来的 `Model=18` 多 4–5 %（5070 游戏内实测 +1.7 %，输出逐位相同）（多拷上一帧的深度，用无 HUD 画面时再加后缓冲）。这是离线 GPU 时间，不等于游戏帧率。黑神话：悟空 4K（R10G10B10A2、无 HUD 画面）游戏内真实帧率：3X 32.0 fps（DLSS 默认 34.0），4X 28.5 fps（DLSS 默认 31.5）。画质只在 4 段抓取上对跳帧真值比过：靠近上一真实帧的序号（t = 1/4、1/3）上重影比 model 18 + t 少，但不是每个场景都更好。
-- XeSS 跑不了时不改跑 DLSS-G：游戏声明的后缓冲不是 R8G8B8A8 / B8G8R8A8 / R10G10B10A2（例如 HDR 常用的 RGBA16F；Intel 自己的 XeSS-FG 也不接受这种格式）或 XeSS 的对象建不出来时，插帧特性被拒绝（插帧关，错误级 `xefg_feature_refused`）；运行中才发现的问题（缺后缓冲、深度、运动矢量或插帧输出，尺寸不一致，录制失败）记一条错误级 `xefg_kernel_fatal` 写明原因，游戏以 `0xE0D55001` 退出。出厂 `UseHudless=Auto` 等于 `0`（2026-11-10 起，C139），整幅画面含 UI 一起插值，不再出现 `xefg_hudless_unused`；`UseHudless=1` 时这是 `xefg_kernel_fatal`，游戏以 `0xE0D55001` 退出。
-- `[DLSSG] Preset=B`（强制 UI 重组）只在游戏同时提供 HUD-less 画面与 UI 平面时生效，多数游戏不提供；这时日志（出厂级别）记一条 `preset_ineffective` 写明缺哪张，画面与不写 `Preset=B` 相同。
-- 游戏自带的是代 A 的 DLSS-G 运行库（≤ 3.8.x、旧版 Streamline 插件，只能驱动 2X；例如巫师 3 次世代版、光明记忆、蜘蛛侠重制、原子之心、三角洲）时，2026-10-19 起帧生成不启用，游戏的请求原样转发（日志错误级 `game_runtime_generation`）；此前这些游戏能开 2X。
-- 预设 C 没有与 RTX 40 / 50 上官方预设 C 的对照；巫师 3 上预设 C 每生成帧快 1 ms 但帧率不变（瓶颈在别处）。
-- `[FrameGeneration] CatmullRomWarp` 在 310.9.16 包上没有对应的内核行：写了就拒绝帧生成（日志错误级 `detail_restore_row_unknown`；2026-10-20 之前只是不生效）。实验性的 `DetailRestore*`、`[Compatibility] LaunchChains` / `PlainVariant` / `ChainBlock0` / `HardwareBilinear`、`[Runtime] CacheDirectory`、`[Debug] QueueTrace` 2026-10-21 删除，2026-10-26 起不读（写了与没写相同）。
-- 显式开关做不到时一律拒绝而不是换路径（2026-10-20）：`[Runtime] Path` / `SRPath` 指错文件、随包的运行库或超分 snippet 缺失（此前分别回退随包 / 交回游戏自己的那份，RTX 40 / 50 上就是原生 2X）、RTX 40 / 50 上 `KernelImage=Cubin`（`kernel_image_unavailable`）；超分安装失败时这次 `nvngx_dlss.dll` 的加载被拒绝，游戏里 DLSS 不可用而不是跑原厂 FP16。拒绝之后游戏菜单怎么表现没有在真实游戏里看过。
-- 超分：`Mode` 把 M / L 钉在所有档位，画质 / 平衡 / DLAA 档因此比游戏自己的 K 慢（业主接受）；0.4.0 的 `Mode=On`（只加速游戏本来就用 L / M 的档）已删除。
-- RTX 20：310.9.16 的三个新内核与 XeSS 只在 RTX 3070 上做过 sm_75 前向 JIT 验证，在真 Turing 上没有跑过；超分 INT8 在 2080 Ti 上做过一次冒烟。RTX 40 / 50：帧生成的 PTX 路线没有实机运行过。
-- 游戏被强关等不正常退出时，后端不写 XeSS 的汇总记录（`xefg_summary`，只影响诊断）。
+- XeSS-FG (`Engine=XeSS`) is optional, and the default is still DLSS-G. On RTX 30 it is much slower per generated frame than DLSS-G (4K: RTX 3070 +77..+86 %, about +3 ms; RTX 3080 Ti offline +109..+114 %), the real frame rate is 8..15 % lower, and 28 % lower in *A Plague Tale: Resonance* (the cause of the extra wait is unidentified); VRAM is about 0.4–0.5 GB higher; `Engine=XeSS` goes up to 4X (`MaxGeneratedFrames` 1–3), and writing 4 or above leaves frame generation disabled (`max_generated_frames_unsupported`). The image-quality difference between HUD-less on / off has not been compared frame by frame. `[Debug] Capture` records nothing under XeSS.
+- Cost of XeSS-FG (model 15) (RTX 3070, offline whole-route replay, `Middle`, DIRECT, GPU milliseconds per real frame together with its generated frames): at 4X, 1440p is 4.5–5.0 ms against 5.3–5.4 ms for the DLSS default (8–15 % faster); 4K is 10.3–10.8 ms against 7.9–8.5 ms for the DLSS default (27–30 % slower); preset C is the fastest at every tier. 2X uses model 18's graph and costs 4–5 % more than the old `Model=18` (+1.7 % measured in game on a 5070, with bit-identical output) (it copies the previous frame's depth as well, plus the back buffer when the HUD-less image is used). This is offline GPU time, not the game's frame rate. In-game real frame rate in *Black Myth: Wukong* 4K (R10G10B10A2, no HUD-less image): 3X 32.0 fps (DLSS default 34.0), 4X 28.5 fps (DLSS default 31.5). Quality was compared against frame-skipping ground truth on only 4 captures: at sequence positions close to the previous real frame (t = 1/4, 1/3) there is less ghosting than with model 18 + t, but it is not better in every scene.
+- When XeSS cannot run, it does not fall back to DLSS-G: if the game's declared back buffer is not R8G8B8A8 / B8G8R8A8 / R10G10B10A2 (for example RGBA16F, commonly used for HDR; Intel's own XeSS-FG does not accept it either) or XeSS's objects cannot be created, the interpolation feature is refused (frame generation off, error-level `xefg_feature_refused`); problems found only while running (missing back buffer, depth, motion vectors or interpolation output, mismatched sizes, capture failure) log one error-level `xefg_kernel_fatal` with the reason, and the game exits with `0xE0D55001`. Factory `UseHudless=Auto` equals `0` (since 2026-11-10, C139), so the whole image, UI included, is interpolated and `xefg_hudless_unused` no longer appears; with `UseHudless=1` this is an `xefg_kernel_fatal` and the game exits with `0xE0D55001`.
+- `[DLSSG] Preset=B` (force UI recomposition) takes effect only when the game provides both a HUD-less image and a UI plane, which most games do not; the log (at factory level) then records one `preset_ineffective` saying which one is missing, and the picture is the same as not writing `Preset=B`.
+- When the game ships generation-A DLSS-G runtime (≤ 3.8.x, old Streamline plug-in, able to drive only 2X; for example The Witcher 3 next-gen, Bright Memory, Spider-Man Remastered, Atomic Heart, Delta Force), frame generation is not enabled since 2026-10-19 and the game's request is forwarded unchanged (error-level `game_runtime_generation` in the log); before that these games could enable 2X.
+- Preset C has no comparison against the official preset C on RTX 40 / 50; on The Witcher 3 preset C is 1 ms faster per generated frame but the frame rate is unchanged (the bottleneck is elsewhere).
+- `[FrameGeneration] CatmullRomWarp` has no corresponding kernel row in the 310.9.16 package: writing it refuses frame generation (error-level `detail_restore_row_unknown`; before 2026-10-20 it was merely ineffective). The experimental `DetailRestore*`, `[Compatibility] LaunchChains` / `PlainVariant` / `ChainBlock0` / `HardwareBilinear`, `[Runtime] CacheDirectory` and `[Debug] QueueTrace` were removed on 2026-10-21 and have not been read since 2026-10-26 (writing them is the same as not writing them).
+- Explicit switches that cannot be honoured are always refused instead of switching to another path (2026-10-20): `[Runtime] Path` / `SRPath` pointing at the wrong file, a missing bundled runtime or super-resolution snippet (previously these fell back to the bundled one / handed back to the game's own, which on RTX 40 / 50 meant native 2X), and `KernelImage=Cubin` on RTX 40 / 50 (`kernel_image_unavailable`); when super-resolution install fails, this load of `nvngx_dlss.dll` is refused, so DLSS is unavailable in the game rather than running the stock FP16. How the game menu behaves after a refusal has not been observed in a real game.
+- Super resolution: `Mode` pins M / L at every tier, so the Quality / Balanced / DLAA tiers are slower than the game's own K (accepted by the project owner); 0.4.0's `Mode=On` (which accelerated only the tiers where the game already used L / M) was removed.
+- RTX 20: the three new kernels of 310.9.16 and XeSS were validated only by sm_75 forward JIT on an RTX 3070 and have not been run on real Turing; super-resolution INT8 had one smoke test on a 2080 Ti. RTX 40 / 50: the PTX route of frame generation has not been run on real hardware (except for the XeSS-FG results on an RTX 5070 in 0.4.2).
+- When the game is killed or exits abnormally, the backend does not write XeSS's summary record (`xefg_summary`; affects diagnostics only).
 
-## 诊断与边界
+## Diagnostics & limits
 
-- 日志写入游戏目录 `dlssg_sm86\logs\dlssg_sm86.log`：所有模块、所有进程都追加写这一个文件，每行先是本地时间、`pid N`、EXE 名和级别字母（E = Level 1 / I = 2 / D = 3），再是 JSON 记录，例如 `2026-10-22 14:03:11.482  pid 12345  Cyberpunk2077.exe  E  {"event":...}`；只看一个游戏时按 EXE 名或 pid 过滤（`Select-String` / `findstr`）。`FrameTiming=1` 时另有普通文本 `frame_timing.txt`，每个进程追加一段。默认 `[Logging] Level=1` 只记错误，排查时改 `2` 或 `3`。
-- 帧生成未生效时先看日志里是否有 `install.active=true` 且 `backend_install.status=0`；缺失多为驱动/运行库不匹配，会记录原因；安装失败时 `nvngx_dlssg.dll` 的加载被拒绝、帧生成不启用（`runtime_selection_failed`），不再改用游戏自己的运行库。
-- 帧生成开着却一帧都不生成：看日志里有没有 `foreign_fg_mod`——有就是游戏里还装着别的插帧 mod（rtx-encore、OptiScaler、旧版的 ReShade 伴随插件等），只留一个。游戏崩溃时日志末尾的 `fg_gate_crash` 写着崩在哪个模块（`ours` 表示是否本项目的代码），反馈问题时请附上。
-- 离线耗时下降不能当成实测游戏 FPS 增幅；实际帧率增益取决于游戏与瓶颈所在。
-- INI 全部键、日志字段与录制回放见 [`docs/INSTALL.md`](docs/INSTALL.md)、[`docs/CAPTURE.md`](docs/CAPTURE.md)。
+- The log is written to `dlssg_sm86\logs\dlssg_sm86.log` in the game directory: every module and every process appends to this one file. Each line starts with the local time, `pid N`, the EXE name and a level letter (E = Level 1 / I = 2 / D = 3), followed by a JSON record, for example `2026-10-22 14:03:11.482  pid 12345  Cyberpunk2077.exe  E  {"event":...}`; when looking at a single game, filter by EXE name or pid (`Select-String` / `findstr`). With `FrameTiming=1` there is also a plain-text `frame_timing.txt`, with one section appended per process. The default `[Logging] Level=1` records errors only; set `2` or `3` when troubleshooting.
+- When frame generation does not take effect, first look in the log for `install.active=true` with `backend_install.status=0`; if missing, it is usually a driver / runtime mismatch and the reason is recorded. When installation fails, the load of `nvngx_dlssg.dll` is refused and frame generation is not enabled (`runtime_selection_failed`); the game's own runtime is no longer used instead.
+- Frame generation is on but not a single frame is generated: check the log for `foreign_fg_mod`. If present, another frame-interpolation mod is installed in the game (rtx-encore, OptiScaler, an old ReShade companion plug-in, and so on); keep only one. When the game crashes, `fg_gate_crash` at the end of the log says in which module it crashed (`ours` indicates whether the code is this project's); please attach it when reporting problems.
+- A drop in offline time must not be read as a measured in-game FPS gain; the real frame-rate gain depends on the game and where its bottleneck is.
+- All INI keys, log fields, and capture / replay are in [`docs/INSTALL.en.md`](docs/INSTALL.en.md) and [`docs/CAPTURE.md`](docs/CAPTURE.md).
 
-## SM75 来源与致谢
+## Credits
 
-- Coldwood1026 的 RTX 20 系列 / SM75 适配（SM75 内核族的来源，见 `THIRD_PARTY_NOTICES.txt`）。
-- NVIDIA 的 DLSS-G 运行库、DLSS 超分 snippet、模型与前后处理（随包、未经修改）。
-- Intel 的 XeSS-FG 模型（着色器与权重，MIT 许可，见 `THIRD_PARTY_NOTICES.txt`）。
-- MFG-Unlocker 1.6.0（Michael Robles / dashdogy，MIT）：XeSS-FG 用的 model 15 移植程序与帧数解锁的做法；其中 46 个程序由 Intel 的程序改来，归 Intel XeSS SDK 条款。"XessFG Model 15 Final" 资料包的作者找到了把 model 15 改标成 model 16 的办法。
+- Coldwood1026's RTX 20-series / SM75 port (the source of the SM75 kernel family; see `THIRD_PARTY_NOTICES.txt`).
+- NVIDIA's DLSS-G runtime, DLSS super-resolution snippet, models and pre/post-processing (bundled, unmodified).
+- Intel's XeSS-FG model (shaders and weights, MIT license, see `THIRD_PARTY_NOTICES.txt`).
+- MFG-Unlocker 1.6.0 (Michael Robles / dashdogy, MIT): the model 15 port used by XeSS-FG and the approach for unlocking the frame count; 46 of its programs were adapted from Intel's programs and fall under the Intel XeSS SDK terms. The author of the "XessFG Model 15 Final" data pack found the way to relabel model 15 as model 16.
 
-## 源码与构建
+## Source & build
 
-- 代理、后端、测试与工具的 C++ 源码在源码仓库里，用 `build.ps1` 构建（默认运行库模型 310.9.16，`-Runtime310916` 指向运行库；`-RuntimeModel 310.9` 是开发用备选、配 `-Runtime3109`；
-  `-KernelPack` 指向内核包），步骤、测试与提交规则见源码仓库的 `CONTRIBUTING.md`。
-- 内核包 `dlssg_sm86\kernels\fg_kernels.dll`、超分内核包、XeSS 模型包与 NVIDIA 运行库不在源码里，从同版本的发布包取。没有内核包时 `Engine=DLSS` 的帧生成
-  被拒绝（日志 `kernel_pack_missing`、`fg_kernels_unavailable`），不改用运行库自己的内核；没有 XeSS 模型包时 `Engine=XeSS` 拒绝插帧（`xefg_unavailable`，插帧关）。
+- The C++ source of the proxy, backend, tests and tools is in the source repository and is built with `build.ps1` (the default runtime model is 310.9.16, `-Runtime310916` points at the runtime; `-RuntimeModel 310.9` is a development alternative used with `-Runtime3109`; `-KernelPack` points at the kernel pack). For steps, tests and submission rules see `CONTRIBUTING.md` in the source repository. `docs/PROJECT.md` describes the source tree.
+- The kernel pack `dlssg_sm86\kernels\fg_kernels.dll`, the super-resolution kernel pack, the XeSS model pack and the NVIDIA runtime are not in the source; take them from the release package of the same version. Without the kernel pack, `Engine=DLSS` frame generation is refused (log `kernel_pack_missing`, `fg_kernels_unavailable`) and the runtime's own kernels are not used instead; without the XeSS model pack, `Engine=XeSS` refuses interpolation (`xefg_unavailable`, interpolation off).
 
-## 许可与第三方
+## License & third parties
 
-- 本项目的 C++ 源码以 MIT 许可发布（`LICENSE.md`，Copyright (c) 2026 sdli1995）。随包提供的内核镜像只以二进制形式提供，不在 MIT 许可范围内。
-- 随包的 `nvngx_dlssg.dll`（310.9.16，SHA 前缀 `cadee1aa…`）以文件形式放在 `dlssg_sm86\runtime\`，超分 snippet `nvngx_dlss.dll`（310.9.16）放在 `dlssg_sm86\sr\`，均未经修改。内核包 `dlssg_sm86\kernels\fg_kernels.dll` 与 `dlssg_sm86\sr\sr_kernels.dll` 里的内核镜像由 NVIDIA 的内核提取、重编译或重写而来（sm_75 一族导入自 Coldwood1026），只以二进制形式提供，不在 MIT 许可范围内。这些都是 NVIDIA 及上游第三方材料，不随源码转授权，见 `THIRD_PARTY_NOTICES.txt`。
-- `dlssg_sm86\xefg\xefg_kernels.dll` 里的着色器与权重来自 Intel XeSS-FG，按 Intel 的 MIT 许可随包，声明见 `THIRD_PARTY_NOTICES.txt`。同一个 DLL 里的 model 15 程序取自 MFG-Unlocker 1.6.0（MIT）：其中 46 个由 Intel 的 XeSS SDK 程序改来，归 Intel XeSS SDK 条款，不在 MFG-Unlocker 的 MIT 与本项目的 `LICENSE.md` 之内。不包含 Intel 的 `libxess_fg.dll`。
+- This project's C++ source is released under the MIT license (`LICENSE.md`, Copyright (c) 2026 sdli1995). The kernel images that ship in the package are provided as binaries only and are not under the MIT license.
+- The bundled `nvngx_dlssg.dll` (310.9.16, SHA prefix `cadee1aa…`) sits as a file in `dlssg_sm86\runtime\`, and the super-resolution snippet `nvngx_dlss.dll` (310.9.16) in `dlssg_sm86\sr\`; both are unmodified. The kernel images in the kernel pack `dlssg_sm86\kernels\fg_kernels.dll` and in `dlssg_sm86\sr\sr_kernels.dll` were extracted, recompiled or rewritten from NVIDIA's kernels (the sm_75 family was imported from Coldwood1026) and are provided as binaries only, outside the MIT license. These are NVIDIA and upstream third-party materials and are not sublicensed with the source; see `THIRD_PARTY_NOTICES.txt`.
+- The shaders and weights in `dlssg_sm86\xefg\xefg_kernels.dll` come from Intel XeSS-FG and ship under Intel's MIT license; the notice is in `THIRD_PARTY_NOTICES.txt`. The model 15 programs in the same DLL are taken from MFG-Unlocker 1.6.0 (MIT); 46 of them were adapted from Intel's XeSS SDK programs and fall under the Intel XeSS SDK terms, not under MFG-Unlocker's MIT or this project's `LICENSE.md`. Intel's `libxess_fg.dll` is not included.

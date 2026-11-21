@@ -1,3 +1,12 @@
+# Build output
+bin/
+obj/
+out/
+out2/
+publish/
+*.exe
+.vs/
+
 # local launcher state (personal paths / play history)
 launcher_settings.json
 launcher_play.log
